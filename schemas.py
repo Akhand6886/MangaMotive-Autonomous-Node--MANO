@@ -22,6 +22,13 @@ class JobResponse(JobBase):
     seo_data: Dict[str, Any]
     formatter_data: Dict[str, Any]
     publisher_data: Dict[str, Any]
+    
+    # Extensions
+    structured_task: Optional[Dict[str, Any]] = None
+    execution_plan: Optional[List[Dict[str, Any]]] = None
+    evaluations: Optional[Dict[str, Any]] = None
+    memory_logs: Optional[List[str]] = None
+
     error_message: Optional[str] = None
     retry_count: int
     created_at: datetime
@@ -92,3 +99,31 @@ class PublisherOutput(BaseModel):
     published_url: Optional[str] = Field(None, description="Public URL or API endpoint of entry")
     status: str = Field(..., description="Published status (Published, Draft, DryRun)")
     published_at: str = Field(..., description="ISO timestamp of publishing")
+
+
+# --- INTELLIGENCE HARNESS SCHEMAS ---
+
+class StructuredTask(BaseModel):
+    topic: str = Field(..., description="Topic of the task (e.g. Solo Leveling Episode 5)")
+    style: str = Field(..., description="Editorial tone or style guidelines (e.g. fast-paced, analytical)")
+    target_platform: str = Field(..., description="Target platform (e.g. YouTube Short, TikTok, Editorial Blog, Contentful Recap)")
+    duration: str = Field(..., description="Estimated duration or length constraints")
+    assets_needed: List[str] = Field(default=[], description="List of assets to generate: Script, Thumbnail, Narration, Video")
+
+class ExecutionStep(BaseModel):
+    step_id: str = Field(..., description="Unique step identifier")
+    name: str = Field(..., description="Short name of step")
+    worker: str = Field(..., description="Worker type (e.g. research_worker, script_writer, fact_verifier)")
+    description: str = Field(..., description="Detailed instructions for the worker")
+
+class ExecutionPlan(BaseModel):
+    plan_title: str = Field(..., description="Short title of execution plan")
+    steps: List[ExecutionStep] = Field(..., description="Ordered list of steps to execute")
+
+class HarnessRequest(BaseModel):
+    prompt: str = Field(..., description="Raw request string from the user")
+
+class ProjectMemorySchema(BaseModel):
+    key: str = Field(..., description="Memory identifier (preferred_tone, banned_phrases, style_guide, successful_hooks)")
+    value: List[str] = Field(..., description="Array of strings representing memory content")
+
