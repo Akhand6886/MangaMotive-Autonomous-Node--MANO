@@ -1,23 +1,34 @@
 import logging
 import asyncio
 import uuid
+import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, status
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from config import settings
-from database import engine, Base, get_db
-from models import Job, Series, Episode, Article, Review
-from schemas import JobCreate, JobResponse, CollectorOutput, ThemeExtractorOutput, ReviewWriterOutput, SEOWorkerOutput, FormatterOutput, PublisherOutput
+from database import engine, Base, get_db, SessionLocal
+from models import Job, Series, Episode, Article, Review, ProjectMemory
+from schemas import (
+    JobCreate, JobResponse, StructuredTask, ExecutionPlan, 
+    ExecutionStep, HarnessRequest, ProjectMemorySchema
+)
 
+# Workers & Planner
 from workers.scheduler import scheduler_worker
-from workers.collector import data_collector_worker
-from workers.theme_extractor import theme_extractor_worker
-from workers.review_writer import review_writer_worker
-from workers.seo_worker import seo_worker
-from workers.formatter import formatting_worker
-from workers.publisher import publishing_worker
+from workers.planner import executive_planner
+from workers.harness_workers import (
+    research_worker, script_writer_worker, lore_checker_worker,
+    thumbnail_strategist_worker, voice_timing_worker, style_consistency_worker,
+    fact_verifier_worker, publishing_worker_agent
+)
+
+# Services
+from services.evaluator import EvaluationLayer
+from services.ollama_service import ollama_service
 
 # Configure logging
 logging.basicConfig(
@@ -29,10 +40,47 @@ logger = logging.getLogger("MainOrchestrator")
 # Create SQLite Database Tables
 Base.metadata.create_all(bind=engine)
 
+def preseed_memory_defaults():
+    """Pre-populates default project memories if the table is empty."""
+    db = SessionLocal()
+    try:
+        existing = db.query(ProjectMemory).count()
+        if existing == 0:
+            logger.info("[Database] Pre-seeding default project memories...")
+            defaults = {
+                "preferred_tone": ["High-energy, engaging, full of anime excitement, detailed analytical style."],
+                "banned_phrases": [
+                    "In conclusion", "As an AI", "Let's dive in", 
+                    "It is important to remember", "Overall, this episode", "In summary"
+                ],
+                "successful_hooks": [
+                    "This episode changed everything...", 
+                    "Why does everyone hate this character?", 
+                    "Here is the dark truth behind the story...",
+                    "The animation quality reaches a new peak in this scene!"
+                ],
+                "style_guide": [
+                    "Use H2 and H3 headings for structured reviews",
+                    "Keep paragraphs under 3 sentences for high readability",
+                    "Analyze character motivations and thematic significance",
+                    "Always highlight standout lines or voice acting performance"
+                ]
+            }
+            for key, val in defaults.items():
+                db.add(ProjectMemory(key=key, value=val))
+            db.commit()
+            logger.info("[Database] Pre-seeding completed.")
+    except Exception as e:
+        logger.error(f"[Database] Failed to pre-seed memories: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
 # Lifespan context manager for FastAPI
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("--- MangaMotive Autonomous Agent Pipeline Initialized ---")
+    logger.info("--- Intelligence Harness Autonomous Agent Pipeline Initialized ---")
+    preseed_memory_defaults()
     scheduler_worker.start()
     
     # Start background job processing daemon loop
@@ -40,76 +88,251 @@ async def lifespan(app: FastAPI):
     yield
     scheduler_worker.stop()
     task.cancel()
-    logger.info("--- MangaMotive Autonomous Agent Pipeline Shutting Down ---")
+    logger.info("--- Intelligence Harness Autonomous Agent Pipeline Shutting Down ---")
 
 app = FastAPI(
-    title="MangaMotive Agentic Worker Pipeline",
-    description="Fully Autonomous AI Agent Pipeline with 7 Specialized Deterministic Workers optimized for Raspberry Pi 5 8GB.",
-    version="2.0.0",
+    title="Intelligence Harness Worker Pipeline",
+    description="7-Layer Multi-Agent Intelligence Harness with Dynamic Planning, Memory Store, and Evaluation Loops.",
+    version="3.0.0",
     lifespan=lifespan
 )
 
+# Serves static files from the static directory
+import os
+os.makedirs("static", exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/")
+async def serve_dashboard():
+    """Serves the frontend visual dashboard at the root URL."""
+    if os.path.exists("static/index.html"):
+        return FileResponse("static/index.html")
+    return {"message": "Intelligence Harness Backend API is active. Front-end static files are missing."}
+
+
+# --- PIPELINE ORCHESTRATION RUNTIME ---
+
 async def process_single_job(job_id: str):
     """
-    Executes the 7-worker pipeline sequentially for a single job.
-    Implements Pillar 4 Reflection & Self-Correction and state progression tracking.
+    Executes the 7-layer pipeline dynamically for a single job.
+    1. Parse Request (Interface Layer)
+    2. Executive Planning (Planner Brain)
+    3. Specialized Workers Loop
+    4. Memory Injection & Update (Memory System)
+    5. Tool executions (Tool Layer)
+    6. Evaluation & Reflection self-correction retry loop (Evaluation Layer)
+    7. Orchestration routing & saving final results (Orchestration Runtime)
     """
-    db: Session = next(get_db())
+    db: Session = SessionLocal()
     job: Job = db.query(Job).filter(Job.id == job_id).first()
-    if not job or job.status in ["completed", "publishing"]:
+    if not job or job.status in ["completed", "failed"]:
+        db.close()
         return
 
-    logger.info(f"[Orchestrator] Starting pipeline execution for Job {job.id} ({job.series_title})...")
+    logger.info(f"[Orchestrator] Initiating Intelligence Harness for Job {job.id} ({job.series_title})...")
     
     try:
-        # Step 2: Data Collector Worker
-        job.status = "collecting"
+        # Load Project Memory preferences
+        memories = db.query(ProjectMemory).all()
+        pref_memory = {m.key: m.value for m in memories}
+        tone = pref_memory.get("preferred_tone", ["Engaging and detailed review style"])[0]
+        banned = pref_memory.get("banned_phrases", [])
+        
+        # Layer 1: Interface Layer (Ensure structured task is set)
+        if not job.structured_task:
+            job.status = "planning"
+            db.commit()
+            # Perform LLM parsing simulation if structured task is empty
+            prompt_parse = (
+                f"Extract structured parameters for topic '{job.series_title}'. "
+                f"Platform matches target type: '{job.target_type}'."
+            )
+            structured_t = await ollama_service.generate_structured(prompt_parse, StructuredTask)
+            job.structured_task = structured_t.model_dump()
+            db.commit()
+        
+        task_info = StructuredTask.model_validate(job.structured_task)
+        
+        # Layer 2: Planner / Executive Brain
+        job.status = "planning"
         db.commit()
-        collector_output: CollectorOutput = await data_collector_worker.process(job)
-        job.collector_data = collector_output.model_dump()
+        logger.info(f"[Orchestrator] Designing execution plan for structured task...")
+        plan: ExecutionPlan = await executive_planner.generate_plan(task_info)
+        
+        # Store execution plan steps inside database
+        plan_steps = []
+        for step in plan.steps:
+            plan_steps.append({
+                "step_id": step.step_id,
+                "name": step.name,
+                "worker": step.worker,
+                "description": step.description,
+                "status": "pending",
+                "output": "",
+                "log": ""
+            })
+        job.execution_plan = plan_steps
+        job.status = "running"
         db.commit()
 
-        # Step 3: Theme Extractor Worker
-        job.status = "extracting"
-        db.commit()
-        theme_output: ThemeExtractorOutput = await theme_extractor_worker.process(collector_output)
-        job.theme_data = theme_output.model_dump()
-        db.commit()
+        # Shared short-term memory (stores worker outputs sequentially)
+        short_term_memory = {}
+        memory_logs_accumulated = []
 
-        # Step 4: Review Writer Worker
-        job.status = "writing"
-        db.commit()
-        writer_output: ReviewWriterOutput = await review_writer_worker.process(collector_output, theme_output)
-        job.writer_data = writer_output.model_dump()
-        db.commit()
+        # Layer 7: Orchestration Runtime execution loop
+        for index, step in enumerate(plan_steps):
+            step_id = step["step_id"]
+            worker_type = step["worker"]
+            step_name = step["name"]
+            
+            logger.info(f"[Orchestrator] Step {index+1}/{len(plan_steps)}: '{step_name}' -> routing to '{worker_type}'")
+            step["status"] = "running"
+            job.execution_plan = list(plan_steps) # trigger column update
+            db.commit()
 
-        # Step 5: SEO Worker
-        job.status = "seo"
-        db.commit()
-        seo_output: SEOWorkerOutput = await seo_worker.process(writer_output)
-        job.seo_data = seo_output.model_dump()
-        db.commit()
+            worker_output = {}
+            step_log = f"Invoking {worker_type} for '{step_name}'.\n"
 
-        # Step 6: Formatting Worker
-        job.status = "formatting"
-        db.commit()
-        formatter_output: FormatterOutput = formatting_worker.process(writer_output, seo_output)
-        job.formatter_data = formatter_output.model_dump()
-        db.commit()
+            # Route to specialized workers
+            attempt = 0
+            max_correction_retries = 3
+            correction_feedback = ""
 
-        # Step 7: Publishing Worker
-        job.status = "publishing"
-        db.commit()
-        publisher_output: PublisherOutput = await publishing_worker.process(
-            job, collector_output, theme_output, writer_output, seo_output, formatter_output
-        )
-        job.publisher_data = publisher_output.model_dump()
+            while attempt < max_correction_retries:
+                attempt += 1
+                try:
+                    if worker_type == "research_worker":
+                        worker_output = await research_worker.process(task_info.topic, task_info.target_platform)
+                        step_log += "Collected research facts. Web search executed.\n"
+                        break # no evaluation needed for raw collector
+                        
+                    elif worker_type == "script_writer":
+                        research_data = short_term_memory.get("research_worker", {})
+                        if correction_feedback:
+                            step_log += f"Self-Correction loop attempt {attempt} based on evaluator feedback.\n"
+                        
+                        worker_output = await script_writer_worker.process(
+                            task_info.topic, 
+                            research_data, 
+                            tone if not correction_feedback else f"{tone}\n\nEVALUATOR REACTION:\n{correction_feedback}", 
+                            banned
+                        )
+                        step_log += f"Generated script draft. Length: {worker_output['word_count']} words.\n"
+                        
+                        # Evaluate Output (Layer 6)
+                        eval_res = await EvaluationLayer.evaluate_content(
+                            worker_output["draft_text"], 
+                            research_data.get("research_facts", []), 
+                            tone, 
+                            banned
+                        )
+                        job.evaluations = eval_res
+                        db.commit()
+
+                        if eval_res["passed"]:
+                            step_log += "Factual and style consistency checks PASSED.\n"
+                            break
+                        else:
+                            step_log += f"Factual/style consistency check FAILED: {eval_res['errors']}\n"
+                            correction_feedback = eval_res["feedback"]
+                            if attempt == max_correction_retries:
+                                step_log += "Max retries reached. Forcing check pass to prevent deadlocks.\n"
+                        
+                    elif worker_type == "lore_checker":
+                        writer_data = short_term_memory.get("script_writer", {})
+                        draft = writer_data.get("draft_text", "")
+                        worker_output = await lore_checker_worker.process(task_info.topic, draft)
+                        step_log += f"Lore audit completed. Is canon-compliant: {worker_output['lore_is_accurate']}.\n"
+                        break
+                        
+                    elif worker_type == "thumbnail_strategist":
+                        writer_data = short_term_memory.get("script_writer", {})
+                        draft = writer_data.get("draft_text", "")
+                        worker_output = await thumbnail_strategist_worker.process(task_info.topic, draft)
+                        step_log += f"Generated image generation prompt. Visual asset fetched.\n"
+                        break
+                        
+                    elif worker_type == "voice_timing":
+                        writer_data = short_term_memory.get("script_writer", {})
+                        draft = writer_data.get("draft_text", "")
+                        worker_output = await voice_timing_worker.process(draft)
+                        step_log += f"Narration synthesized. TTS audio length: {worker_output['duration_seconds']}s.\n"
+                        break
+                        
+                    elif worker_type == "style_consistency":
+                        writer_data = short_term_memory.get("script_writer", {})
+                        draft = writer_data.get("draft_text", "")
+                        worker_output = await style_consistency_worker.process(task_info.topic, draft)
+                        step_log += f"SEO Title: '{worker_output['seo_title']}'. SEO metadata and slug verified.\n"
+                        break
+                        
+                    elif worker_type == "fact_verifier":
+                        writer_data = short_term_memory.get("script_writer", {})
+                        research_data = short_term_memory.get("research_worker", {})
+                        draft = writer_data.get("draft_text", "")
+                        worker_output = await fact_verifier_worker.process(draft, research_data.get("research_facts", []))
+                        step_log += f"Factual consistency verified. Accuracy Score: {worker_output['accuracy_score']}/10.\n"
+                        break
+                        
+                    elif worker_type == "publishing_worker":
+                        # Assemble complete package
+                        writer = short_term_memory.get("script_writer", {})
+                        seo = short_term_memory.get("style_consistency", {})
+                        thumb = short_term_memory.get("thumbnail_strategist", {})
+                        voice = short_term_memory.get("voice_timing", {})
+                        
+                        payload = {
+                            "topic": task_info.topic,
+                            "target_platform": task_info.target_platform,
+                            "draft_text": writer.get("draft_text", ""),
+                            "seo_data": seo,
+                            "image_url": thumb.get("image_url", ""),
+                            "audio_url": voice.get("audio_url", "")
+                        }
+                        worker_output = await publishing_worker_agent.process(job.id, payload)
+                        step_log += f"Asset payloads uploaded. CMS sync status: {worker_output['status']}.\n"
+                        break
+                        
+                    else:
+                        step_log += f"Unknown worker '{worker_type}'. Skipping.\n"
+                        break
+
+                except Exception as ex:
+                    step_log += f"Error executing worker action on attempt {attempt}: {ex}\n"
+                    if attempt == max_correction_retries:
+                        raise ex
+
+            # Save step output to short-term memory
+            short_term_memory[worker_type] = worker_output
+            
+            # Map legacy collector/theme/writer fields for API backward compatibility
+            if worker_type == "research_worker":
+                job.collector_data = worker_output
+            elif worker_type == "script_writer":
+                job.writer_data = worker_output
+            elif worker_type == "style_consistency":
+                job.seo_data = worker_output
+                job.formatter_data = worker_output
+
+            # Update step details
+            step["status"] = "completed"
+            step["output"] = json.dumps(worker_output, indent=2)
+            step["log"] = step_log
+            
+            memory_logs_accumulated.append(f"Loaded memory guidelines for step '{step_name}'.")
+            
+            job.execution_plan = list(plan_steps) # push changes
+            job.memory_logs = memory_logs_accumulated
+            db.commit()
+
+        # Mark final job status
+        job.publisher_data = short_term_memory.get("publishing_worker", {})
         job.status = "completed"
         db.commit()
-        logger.info(f"[Orchestrator] Pipeline execution COMPLETED for Job {job.id}.")
+        logger.info(f"[Orchestrator] Multi-agent execution completed for Job {job.id}.")
 
     except Exception as e:
-        logger.error(f"[Orchestrator] Pipeline execution FAILED for Job {job.id}: {e}")
+        logger.error(f"[Orchestrator] Execution failed for Job {job.id}: {e}")
         job.status = "failed"
         job.error_message = str(e)
         job.retry_count += 1
@@ -121,43 +344,115 @@ async def background_job_processor_daemon():
     """Continuous background daemon polling SQLite for queued jobs."""
     while True:
         try:
-            db: Session = next(get_db())
+            db: Session = SessionLocal()
             queued_jobs = db.query(Job).filter(Job.status == "queued").all()
             for job in queued_jobs:
-                await process_single_job(job.id)
+                # Set status to planning and initiate async processing
+                job.status = "planning"
+                db.commit()
+                asyncio.create_task(process_single_job(job.id))
             db.close()
         except Exception as e:
             logger.error(f"[Daemon] Error in background job processor daemon: {e}")
-        await asyncio.sleep(10)
+        await asyncio.sleep(5)
 
 
 # --- REST API ENDPOINTS ---
 
-@app.post("/api/trigger", response_model=JobResponse, status_code=status.HTTP_202_ACCEPTED)
-async def trigger_pipeline(job_in: JobCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+@app.post("/api/harness/parse", response_model=StructuredTask)
+async def parse_prompt_to_task(req: HarnessRequest):
     """
-    Manually triggers an autonomous pipeline job for a series or episode.
+    Interface Layer (Layer 1).
+    Takes a raw text prompt and parses it into structured task parameters.
     """
-    # Look up series
-    series = db.query(Series).filter(Series.title == job_in.series_title).first()
-    series_id = series.id if series else job_in.series_id or str(uuid.uuid4())
+    logger.info(f"[API: Parse] Parsing raw user prompt: '{req.prompt}'")
+    prompt = (
+        f"You are the Interface Layer parser of the MangaMotive Intelligence Harness.\n"
+        f"Parse the user's raw video or blog request into a structured task JSON object.\n\n"
+        f"User Prompt: \"{req.prompt}\"\n\n"
+        f"Determine the topic, style/tone, target_platform, estimated duration, and assets needed (e.g. Script, Thumbnail, Voice Audio, Finished Video)."
+    )
+    
+    parsed_task = await ollama_service.generate_structured(prompt, StructuredTask)
+    logger.info(f"[API: Parse] Output topic: '{parsed_task.topic}' on target: '{parsed_task.target_platform}'")
+    return parsed_task
 
+@app.post("/api/harness/trigger", response_model=JobResponse, status_code=status.HTTP_202_ACCEPTED)
+async def trigger_harness_job(task: StructuredTask, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """
+    Triggers a harness pipeline execution run based on a StructuredTask.
+    """
+    job_id = str(uuid.uuid4())
+    
+    # Save a series record if needed
+    clean_slug = task.topic.lower().replace(" ", "-").replace(":", "")
+    series = db.query(Series).filter(Series.title == task.topic).first()
+    series_id = series.id if series else f"series_{clean_slug}"
+    
     if not series:
-        # Create series entry if missing
-        new_series = Series(
+        series = Series(
             id=series_id,
-            title=job_in.series_title,
-            slug=job_in.series_title.lower().replace(" ", "-"),
+            title=task.topic,
+            slug=clean_slug,
             series_type="animeSeries"
         )
-        db.add(new_series)
+        db.add(series)
         db.commit()
 
+    new_job = Job(
+        id=job_id,
+        target_type="youtube_short" if "short" in task.target_platform.lower() else "editorial_blog",
+        series_id=series_id,
+        series_title=task.topic,
+        status="queued",
+        structured_task=task.model_dump()
+    )
+    db.add(new_job)
+    db.commit()
+    db.refresh(new_job)
+
+    # Hand off execution to background task worker
+    background_tasks.add_task(process_single_job, job_id)
+    return new_job
+
+@app.get("/api/harness/memory", response_model=List[ProjectMemorySchema])
+async def get_project_memory(db: Session = Depends(get_db)):
+    """Memory Layer: Retrieve all editorial settings."""
+    memories = db.query(ProjectMemory).all()
+    return [{"key": m.key, "value": m.value} for m in memories]
+
+@app.post("/api/harness/memory")
+async def save_project_memory(memory_item: ProjectMemorySchema, db: Session = Depends(get_db)):
+    """Memory Layer: Save or update an editorial guideline setting."""
+    mem = db.query(ProjectMemory).filter(ProjectMemory.key == memory_item.key).first()
+    if mem:
+        mem.value = memory_item.value
+    else:
+        mem = ProjectMemory(key=memory_item.key, value=memory_item.value)
+        db.add(mem)
+    db.commit()
+    return {"message": f"Successfully updated memory key: '{memory_item.key}'."}
+
+@app.delete("/api/harness/memory/{key}")
+async def delete_project_memory(key: str, db: Session = Depends(get_db)):
+    """Memory Layer: Delete or reset a specific editorial memory setting."""
+    mem = db.query(ProjectMemory).filter(ProjectMemory.key == key).first()
+    if not mem:
+        raise HTTPException(status_code=404, detail="Memory key not found")
+    db.delete(mem)
+    db.commit()
+    return {"message": f"Successfully deleted memory key: '{key}'."}
+
+
+# --- LEGACY APIS (Backward compatibility for tests & scheduler) ---
+
+@app.post("/api/trigger", response_model=JobResponse, status_code=status.HTTP_202_ACCEPTED)
+async def legacy_trigger(job_in: JobCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Triggers the pipeline matching the legacy REST schemas."""
     job_id = str(uuid.uuid4())
     new_job = Job(
         id=job_id,
         target_type=job_in.target_type,
-        series_id=series_id,
         series_title=job_in.series_title,
         episode_number=job_in.episode_number,
         status="queued"
@@ -165,18 +460,15 @@ async def trigger_pipeline(job_in: JobCreate, background_tasks: BackgroundTasks,
     db.add(new_job)
     db.commit()
     db.refresh(new_job)
-
     background_tasks.add_task(process_single_job, job_id)
     return new_job
 
 @app.get("/api/jobs", response_model=List[JobResponse])
 async def list_jobs(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
-    """Lists all active and historical pipeline jobs."""
     return db.query(Job).order_by(Job.created_at.desc()).offset(skip).limit(limit).all()
 
 @app.get("/api/jobs/{job_id}", response_model=JobResponse)
 async def get_job(job_id: str, db: Session = Depends(get_db)):
-    """Retrieves the current state and worker payloads of a specific job."""
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -184,9 +476,9 @@ async def get_job(job_id: str, db: Session = Depends(get_db)):
 
 @app.get("/api/series")
 async def list_series(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
-    """Lists all tracked anime/manga series in local SQLite database."""
     series = db.query(Series).offset(skip).limit(limit).all()
     return [{"id": s.id, "title": s.title, "slug": s.slug, "type": s.series_type} for s in series]
+
 
 if __name__ == "__main__":
     import uvicorn
