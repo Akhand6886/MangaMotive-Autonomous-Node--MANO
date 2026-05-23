@@ -1,5 +1,5 @@
 document.addEventListener('DOMContentLoaded', () => {
-    // Current Active States
+    // --- State ---
     let activeJobId = null;
     let activeJobTimer = null;
     let selectedStepId = null;
@@ -96,7 +96,9 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (tabId === 'execution') {
             pageTitle.textContent = "Active Execution Loop";
             pageDesc.textContent = "Monitor the real-time agent execution plan timeline and log outputs.";
-            document.getElementById('execution-badge').classList.add('hidden');
+            const execBadge = document.getElementById('execution-badge');
+            if (execBadge) execBadge.classList.add('hidden');
+            selectedStepId = null;  // Reset step inspection on tab re-entry
         } else if (tabId === 'memory') {
             pageTitle.textContent = "Cumulative Preference Memory";
             pageDesc.textContent = "Manage SQLite persistent guidelines, style preferences, and banned words.";
@@ -159,7 +161,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         } catch (error) {
             console.error("Parse Error:", error);
-            alert("Failed to parse prompt. Falling back to simple default task structure.");
+            alert("Failed to parse prompt. Using default task structure.");
             // Set defaults
             taskTopic.value = "Anime Spot";
             taskPlatform.value = "Editorial Blog";
@@ -439,7 +441,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const box = document.createElement('div');
                 box.className = 'memory-box';
                 box.innerHTML = `
-                    <label>${mem.key.replace('_', ' ')}</label>
+                    <label>${mem.key.replaceAll('_', ' ')}</label>
                     <p style="font-size:11px; color:var(--text-secondary)">Guidelines separated by comma or newlines.</p>
                     <textarea data-key="${mem.key}" rows="4">${mem.value.join('\n')}</textarea>
                 `;
@@ -519,4 +521,10 @@ document.addEventListener('DOMContentLoaded', () => {
             jobsTableBody.innerHTML = '<tr><td colspan="6" class="text-center text-danger">Failed to fetch historical database.</td></tr>';
         }
     }
+
+    // Cleanup intervals on page unload to prevent memory leaks
+    window.addEventListener('beforeunload', () => {
+        if (activeJobTimer) clearInterval(activeJobTimer);
+        if (playbackInterval) clearInterval(playbackInterval);
+    });
 });
