@@ -1,7 +1,19 @@
-from datetime import datetime
+"""
+SQLAlchemy ORM Models for the Intelligence Harness.
+
+Defines database schema for Series, Episodes, Articles, Reviews,
+Jobs (pipeline execution state), and ProjectMemory (editorial preferences).
+"""
+
+from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Text, Float, Boolean, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import relationship
 from database import Base
+
+
+def _utcnow():
+    """Returns timezone-aware UTC timestamp."""
+    return datetime.now(timezone.utc)
 
 class Series(Base):
     """
@@ -15,9 +27,9 @@ class Series(Base):
     slug = Column(String, unique=True, index=True, nullable=False)
     contentful_id = Column(String, unique=True, index=True, nullable=True)
     series_type = Column(String, default="animeSeries", comment="animeSeries, mangaSeries, manhwaSeries")
-    metadata_payload = Column(JSON, default={}, comment="Cached raw metadata from APIs")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    metadata_payload = Column(JSON, default=dict, comment="Cached raw metadata from APIs")
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     episodes = relationship("Episode", back_populates="series", cascade="all, delete-orphan")
     reviews = relationship("Review", back_populates="series", cascade="all, delete-orphan")
@@ -43,9 +55,9 @@ class Episode(Base):
     rating = Column(Float, nullable=True)
     arc = Column(String, nullable=True)
     thumbnail_asset_id = Column(String, nullable=True)
-    impactful_lines = Column(JSON, default=[], comment="Array of up to 3 impactful quote strings")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    impactful_lines = Column(JSON, default=list, comment="Array of up to 3 impactful quote strings")
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     series = relationship("Series", back_populates="episodes")
 
@@ -64,11 +76,11 @@ class Article(Base):
     publish_date = Column(String, nullable=True)
     excerpt = Column(Text, nullable=True)
     body_rich_text = Column(JSON, nullable=True, comment="Contentful Rich Text structure")
-    tags = Column(JSON, default=[])
-    categories = Column(JSON, default=[])
+    tags = Column(JSON, default=list)
+    categories = Column(JSON, default=list)
     cover_image_asset_id = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     series = relationship("Series", back_populates="articles")
 
@@ -89,12 +101,12 @@ class Review(Base):
     negative_summary = Column(String, nullable=True)
     verdict = Column(String, nullable=True)
     review_body_rich_text = Column(JSON, nullable=True, comment="Contentful Rich Text structure")
-    media_asset_ids = Column(JSON, default=[])
+    media_asset_ids = Column(JSON, default=list)
     published_date = Column(String, nullable=True)
     seo_title = Column(String, nullable=True)
     seo_description = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     series = relationship("Series", back_populates="reviews")
 
@@ -114,23 +126,26 @@ class Job(Base):
     status = Column(String, default="queued", index=True, comment="queued, planning, running, completed, failed")
     
     # Worker payloads & state progression
-    collector_data = Column(JSON, default={}, comment="Output from Data Collector Worker")
-    theme_data = Column(JSON, default={}, comment="Output from Theme Extractor Worker")
-    writer_data = Column(JSON, default={}, comment="Output from Review Writer Worker")
-    seo_data = Column(JSON, default={}, comment="Output from SEO Worker")
-    formatter_data = Column(JSON, default={}, comment="Output from Formatting Worker")
-    publisher_data = Column(JSON, default={}, comment="Final Output from Publishing Worker")
+    collector_data = Column(JSON, default=dict, comment="Output from Data Collector Worker")
+    theme_data = Column(JSON, default=dict, comment="Output from Theme Extractor Worker")
+    writer_data = Column(JSON, default=dict, comment="Output from Review Writer Worker")
+    seo_data = Column(JSON, default=dict, comment="Output from SEO Worker")
+    formatter_data = Column(JSON, default=dict, comment="Output from Formatting Worker")
+    publisher_data = Column(JSON, default=dict, comment="Final Output from Publishing Worker")
     
     # Intelligence Harness extensions
-    structured_task = Column(JSON, default={}, comment="Parsed request metadata")
-    execution_plan = Column(JSON, default=[], comment="List of dynamically generated plan steps")
-    evaluations = Column(JSON, default={}, comment="Factual consistency, style compliance, and engagement score evaluations")
-    memory_logs = Column(JSON, default=[], comment="Logs of memories read or written")
+    structured_task = Column(JSON, default=dict, comment="Parsed request metadata")
+    execution_plan = Column(JSON, default=list, comment="List of dynamically generated plan steps")
+    evaluations = Column(JSON, default=dict, comment="Factual consistency, style compliance, and engagement score evaluations")
+    memory_logs = Column(JSON, default=list, comment="Logs of memories read or written")
 
     error_message = Column(Text, nullable=True)
     retry_count = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    def __repr__(self) -> str:
+        return f"<Job(id={self.id!r}, status={self.status!r}, series={self.series_title!r})>"
 
 
 class ProjectMemory(Base):
@@ -140,6 +155,6 @@ class ProjectMemory(Base):
     __tablename__ = "project_memory"
 
     key = Column(String, primary_key=True, index=True, comment="Memory key: preferred_tone, banned_phrases, etc.")
-    value = Column(JSON, default=[], comment="JSON array or object storing memory values")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    value = Column(JSON, default=list, comment="JSON array or object storing memory values")
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
