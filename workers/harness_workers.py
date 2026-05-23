@@ -1,3 +1,11 @@
+"""
+Specialized Worker Agents (Layer 3).
+
+Eight autonomous worker agents, each responsible for a specific domain:
+research, script writing, lore checking, thumbnail design, voice timing,
+style consistency, fact verification, and publishing.
+"""
+
 import logging
 import json
 import re
@@ -10,6 +18,9 @@ from database import SessionLocal
 from models import Series, Episode, Review, Article
 
 logger = logging.getLogger("SpecializedWorkers")
+
+# Maximum characters of script text to include in prompts (prevents token overflow)
+_MAX_PROMPT_CONTEXT_CHARS = 300
 
 # --- WORKER STRUCTURED SCHEMAS ---
 
@@ -31,7 +42,18 @@ class VerificationResult(BaseModel):
 
 class ResearchWorker:
     """Gathers facts, synopses, and transcript chunks using search tools."""
+
     async def process(self, topic: str, target_platform: str) -> Dict[str, Any]:
+        """
+        Collects research data for a given topic.
+
+        Args:
+            topic: Subject to research (e.g. anime series name).
+            target_platform: Target output platform for context.
+
+        Returns:
+            Dict with topic, research_facts list, and subtitles string.
+        """
         logger.info(f"[Research Worker] Starting deep research on: '{topic}'")
         search_query = f"{topic} plot synopsis character details facts"
         facts = await ToolLayer.web_search(search_query)
@@ -44,9 +66,22 @@ class ResearchWorker:
 
 class ScriptWriterWorker:
     """Generates the script narration or article draft, enforcing tone and style memories."""
+
     async def process(self, topic: str, research: Dict[str, Any], tone: str, banned_phrases: List[str]) -> Dict[str, Any]:
+        """
+        Generates a narration script incorporating research facts and editorial preferences.
+
+        Args:
+            topic: Subject of the content.
+            research: Research worker output containing research_facts.
+            tone: Editorial tone/style preferences.
+            banned_phrases: Phrases to avoid in generated content.
+
+        Returns:
+            Dict with draft_text and word_count.
+        """
         logger.info(f"[Script Writer] Generating narrative content for: '{topic}'")
-        facts_summary = "\n".join([f"- {f}" for f in research.get("research_facts", [])])
+        facts_summary = "\n".join(f"- {f}" for f in research.get("research_facts", []))
         banned_summary = ", ".join(banned_phrases) if banned_phrases else "None"
         
         prompt = (
@@ -99,11 +134,23 @@ class LoreCheckerWorker:
 class ThumbnailStrategistWorker:
     """Designs visuals and generates cover thumbnails using image tools."""
     async def process(self, topic: str, script_text: str) -> Dict[str, Any]:
+        """
+        Designs a thumbnail by generating a visual prompt from the script.
+
+        Args:
+            topic: Subject of the content.
+            script_text: Script draft to derive visual concepts from.
+
+        Returns:
+            Dict with image_prompt, text_overlay, and image_url.
+        """
         logger.info(f"[Thumbnail Strategist] Designing visual scene for '{topic}'")
+        # Safe truncation that doesn't split mid-word
+        truncated = script_text[:_MAX_PROMPT_CONTEXT_CHARS].rsplit(" ", 1)[0] if len(script_text) > _MAX_PROMPT_CONTEXT_CHARS else script_text
         prompt = (
             f"Based on the following script, describe a single visually stunning cover image or thumbnail. "
             f"Describe characters, action, emotional expression, lighting, and neon contrast:\n\n"
-            f"--- SCRIPT ---\n{script_text[:300]}...\n\n"
+            f"--- SCRIPT ---\n{truncated}...\n\n"
             f"Respond ONLY with a valid JSON object matching this schema:\n"
             f"Do not include markdown or conversational formatting outside the JSON."
         )
@@ -142,11 +189,23 @@ class VoiceTimingWorker:
 
 class StyleConsistencyWorker:
     """Optimizes title, generates metadata tags, slug, and formats markdown headings."""
+
     async def process(self, topic: str, draft_text: str) -> Dict[str, Any]:
+        """
+        Generates SEO metadata and cleans markdown formatting.
+
+        Args:
+            topic: Subject of the content.
+            draft_text: Raw script/article draft text.
+
+        Returns:
+            Dict with seo_title, slug, meta_description, keywords, tags, and formatted_markdown.
+        """
         logger.info(f"[Style Worker] Generating SEO metadata and formatting layout for '{topic}'...")
+        truncated = draft_text[:400].rsplit(" ", 1)[0] if len(draft_text) > 400 else draft_text
         prompt = (
             f"Review the draft content for the topic '{topic}' and generate SEO metadata.\n\n"
-            f"--- DRAFT CONTENT ---\n{draft_text[:400]}...\n\n"
+            f"--- DRAFT CONTENT ---\n{truncated}...\n\n"
             f"Respond ONLY with a valid JSON object matching this schema:\n"
             f"Do not include markdown or conversational formatting outside the JSON."
         )
@@ -183,9 +242,20 @@ class StyleConsistencyWorker:
 
 class FactVerifierWorker:
     """Verifies final deliverables against research facts to detect hallucinations."""
+
     async def process(self, script_text: str, research_facts: List[str]) -> Dict[str, Any]:
+        """
+        Cross-references script text against collected research facts.
+
+        Args:
+            script_text: The generated content to verify.
+            research_facts: Known accurate facts from the research phase.
+
+        Returns:
+            Dict with accuracy_score (1-10) and hallucinations list.
+        """
         logger.info("[Fact Verifier] Auditing draft text factual consistency against research...")
-        facts_summary = "\n".join([f"- {f}" for f in research_facts])
+        facts_summary = "\n".join(f"- {f}" for f in research_facts)
         prompt = (
             f"Verify the factual consistency of the following script against the known research facts.\n\n"
             f"--- RESEARCH FACTS ---\n{facts_summary}\n\n"
@@ -209,7 +279,18 @@ class FactVerifierWorker:
 
 class PublishingWorkerAgent:
     """Publishes assets to SQLite and content endpoints."""
+
     async def process(self, job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Saves finalized content to the local SQLite database.
+
+        Args:
+            job_id: UUID of the parent job.
+            payload: Dict containing topic, target_platform, draft_text, seo_data, image_url, audio_url.
+
+        Returns:
+            Dict with published_entry_id, status, assets, and destination.
+        """
         logger.info(f"[Publishing Worker] Completing publishing execution details for Job {job_id}...")
         
         db = SessionLocal()
@@ -274,9 +355,9 @@ class PublishingWorkerAgent:
                 "destination": "Local SQLite Database Memory"
             }
         except Exception as e:
-            logger.error(f"[Publishing Worker] Sync state error: {e}")
+            logger.error(f"[Publishing Worker] Sync state error: {e}", exc_info=True)
             db.rollback()
-            raise e
+            raise
         finally:
             db.close()
 
