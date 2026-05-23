@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import os
 import uuid
 import json
 from contextlib import asynccontextmanager
@@ -7,6 +8,7 @@ from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from typing import List, Dict, Any, Optional
 
 from config import settings
@@ -79,15 +81,20 @@ def preseed_memory_defaults():
 # Lifespan context manager for FastAPI
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Manages application startup and graceful shutdown lifecycle."""
     logger.info("--- Intelligence Harness Autonomous Agent Pipeline Initialized ---")
     preseed_memory_defaults()
     scheduler_worker.start()
     
     # Start background job processing daemon loop
-    task = asyncio.create_task(background_job_processor_daemon())
+    daemon_task = asyncio.create_task(background_job_processor_daemon())
     yield
     scheduler_worker.stop()
-    task.cancel()
+    daemon_task.cancel()
+    try:
+        await daemon_task
+    except asyncio.CancelledError:
+        logger.info("Background daemon task cancelled gracefully.")
     logger.info("--- Intelligence Harness Autonomous Agent Pipeline Shutting Down ---")
 
 app = FastAPI(
@@ -98,7 +105,6 @@ app = FastAPI(
 )
 
 # Serves static files from the static directory
-import os
 os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -112,26 +118,33 @@ async def serve_dashboard():
 
 # --- PIPELINE ORCHESTRATION RUNTIME ---
 
+# Terminal job states that should not be re-processed
+_TERMINAL_STATUSES = frozenset({"completed", "failed"})
+
 async def process_single_job(job_id: str):
     """
-    Executes the 7-layer pipeline dynamically for a single job.
-    1. Parse Request (Interface Layer)
-    2. Executive Planning (Planner Brain)
-    3. Specialized Workers Loop
-    4. Memory Injection & Update (Memory System)
-    5. Tool executions (Tool Layer)
-    6. Evaluation & Reflection self-correction retry loop (Evaluation Layer)
-    7. Orchestration routing & saving final results (Orchestration Runtime)
+    Executes the full 7-layer pipeline dynamically for a single job.
+
+    Pipeline Layers:
+        1. Interface Layer — parse raw request into StructuredTask
+        2. Executive Planner — decompose task into ordered execution steps
+        3. Specialized Workers — route each step to its assigned worker agent
+        4. Memory System — inject editorial preferences and accumulate logs
+        5. Tool Layer — external APIs (search, image gen, TTS, DB lookups)
+        6. Evaluation Layer — factual/style/engagement audits with retry loop
+        7. Orchestration Runtime — route results, persist state, finalize job
+
+    Args:
+        job_id: UUID string identifying the job to process.
     """
     db: Session = SessionLocal()
-    job: Job = db.query(Job).filter(Job.id == job_id).first()
-    if not job or job.status in ["completed", "failed"]:
-        db.close()
-        return
-
-    logger.info(f"[Orchestrator] Initiating Intelligence Harness for Job {job.id} ({job.series_title})...")
-    
     try:
+        job: Job = db.query(Job).filter(Job.id == job_id).first()
+        if not job or job.status in _TERMINAL_STATUSES:
+            return
+
+        logger.info(f"[Orchestrator] Initiating Intelligence Harness for Job {job.id} ({job.series_title})...")
+    
         # Load Project Memory preferences
         memories = db.query(ProjectMemory).all()
         pref_memory = {m.key: m.value for m in memories}
@@ -187,7 +200,7 @@ async def process_single_job(job_id: str):
             
             logger.info(f"[Orchestrator] Step {index+1}/{len(plan_steps)}: '{step_name}' -> routing to '{worker_type}'")
             step["status"] = "running"
-            job.execution_plan = list(plan_steps) # trigger column update
+            flag_modified(job, "execution_plan")
             db.commit()
 
             worker_output = {}
@@ -321,8 +334,9 @@ async def process_single_job(job_id: str):
             
             memory_logs_accumulated.append(f"Loaded memory guidelines for step '{step_name}'.")
             
-            job.execution_plan = list(plan_steps) # push changes
+            flag_modified(job, "execution_plan")
             job.memory_logs = memory_logs_accumulated
+            flag_modified(job, "memory_logs")
             db.commit()
 
         # Mark final job status
@@ -332,28 +346,38 @@ async def process_single_job(job_id: str):
         logger.info(f"[Orchestrator] Multi-agent execution completed for Job {job.id}.")
 
     except Exception as e:
-        logger.error(f"[Orchestrator] Execution failed for Job {job.id}: {e}")
-        job.status = "failed"
-        job.error_message = str(e)
-        job.retry_count += 1
-        db.commit()
+        logger.error(f"[Orchestrator] Execution failed for Job {job_id}: {e}", exc_info=True)
+        try:
+            job.status = "failed"
+            job.error_message = str(e)[:2000]  # Truncate to prevent DB overflow
+            job.retry_count += 1
+            db.commit()
+        except Exception as db_err:
+            logger.error(f"[Orchestrator] Failed to persist error state: {db_err}")
+            db.rollback()
     finally:
         db.close()
 
 async def background_job_processor_daemon():
-    """Continuous background daemon polling SQLite for queued jobs."""
+    """
+    Continuous background daemon that polls SQLite for queued jobs.
+    Runs every 5 seconds, picks up new jobs, and spawns async processing tasks.
+    Designed to be cancelled gracefully via asyncio task cancellation.
+    """
     while True:
+        db: Session = SessionLocal()
         try:
-            db: Session = SessionLocal()
             queued_jobs = db.query(Job).filter(Job.status == "queued").all()
             for job in queued_jobs:
-                # Set status to planning and initiate async processing
                 job.status = "planning"
                 db.commit()
                 asyncio.create_task(process_single_job(job.id))
-            db.close()
+        except asyncio.CancelledError:
+            raise  # Allow graceful shutdown
         except Exception as e:
             logger.error(f"[Daemon] Error in background job processor daemon: {e}")
+        finally:
+            db.close()
         await asyncio.sleep(5)
 
 
