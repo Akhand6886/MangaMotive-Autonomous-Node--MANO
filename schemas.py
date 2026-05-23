@@ -1,3 +1,10 @@
+"""
+Pydantic Schemas for API request/response serialization and worker structured output.
+
+Defines validation models for the REST API, worker output schemas,
+and Intelligence Harness task/plan schemas.
+"""
+
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -5,15 +12,17 @@ from datetime import datetime
 # --- JOB SCHEMAS ---
 
 class JobBase(BaseModel):
+    """Base schema for job creation with required series metadata."""
     target_type: str = Field(..., description="episode_recap, series_review, editorial_blog")
     series_id: Optional[str] = Field(None, description="Contentful SysID or local UUID of Series")
-    series_title: str = Field(..., description="Name of the anime/manga series")
-    episode_number: Optional[int] = Field(None, description="Episode number if target_type is episode_recap")
+    series_title: str = Field(..., min_length=1, description="Name of the anime/manga series")
+    episode_number: Optional[int] = Field(None, ge=1, description="Episode number if target_type is episode_recap")
 
 class JobCreate(JobBase):
     pass
 
 class JobResponse(JobBase):
+    """Full job response schema including all worker outputs and harness extensions."""
     id: str
     status: str
     collector_data: Dict[str, Any]
@@ -23,14 +32,14 @@ class JobResponse(JobBase):
     formatter_data: Dict[str, Any]
     publisher_data: Dict[str, Any]
     
-    # Extensions
+    # Intelligence Harness extensions
     structured_task: Optional[Dict[str, Any]] = None
     execution_plan: Optional[List[Dict[str, Any]]] = None
     evaluations: Optional[Dict[str, Any]] = None
     memory_logs: Optional[List[str]] = None
 
     error_message: Optional[str] = None
-    retry_count: int
+    retry_count: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -104,7 +113,8 @@ class PublisherOutput(BaseModel):
 # --- INTELLIGENCE HARNESS SCHEMAS ---
 
 class StructuredTask(BaseModel):
-    topic: str = Field(..., description="Topic of the task (e.g. Solo Leveling Episode 5)")
+    """Parsed structured task from the Interface Layer."""
+    topic: str = Field(..., min_length=1, description="Topic of the task (e.g. Solo Leveling Episode 5)")
     style: str = Field(..., description="Editorial tone or style guidelines (e.g. fast-paced, analytical)")
     target_platform: str = Field(..., description="Target platform (e.g. YouTube Short, TikTok, Editorial Blog, Contentful Recap)")
     duration: str = Field(..., description="Estimated duration or length constraints")
@@ -121,9 +131,11 @@ class ExecutionPlan(BaseModel):
     steps: List[ExecutionStep] = Field(..., description="Ordered list of steps to execute")
 
 class HarnessRequest(BaseModel):
-    prompt: str = Field(..., description="Raw request string from the user")
+    """Raw text request for the Interface Layer parser."""
+    prompt: str = Field(..., min_length=3, description="Raw request string from the user")
 
 class ProjectMemorySchema(BaseModel):
-    key: str = Field(..., description="Memory identifier (preferred_tone, banned_phrases, style_guide, successful_hooks)")
+    """Schema for reading/writing editorial preference memory settings."""
+    key: str = Field(..., min_length=1, description="Memory identifier (preferred_tone, banned_phrases, style_guide, successful_hooks)")
     value: List[str] = Field(..., description="Array of strings representing memory content")
 
