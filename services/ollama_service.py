@@ -1,7 +1,15 @@
+"""
+Ollama LLM Service Layer.
+
+Provides structured and freeform text generation via a local Ollama runtime,
+with automatic schema-compliant mock fallbacks when offline.
+"""
+
+import re
 import httpx
 import json
 import logging
-from typing import Type, TypeVar, Optional, Any
+from typing import Type, TypeVar, Optional, Any, Dict, List
 from pydantic import BaseModel, ValidationError
 from config import settings
 
@@ -14,17 +22,33 @@ class OllamaService:
     Service for interacting with the local Ollama LLM runtime.
     Optimized for small models (Gemma 4 E2B, Qwen2.5) on Raspberry Pi 5 8GB.
     Implements Pillar 4: Reflection & Self-Correction loop.
+
+    Uses a shared httpx.AsyncClient for connection pooling and keep-alive reuse.
     """
+
     def __init__(self):
         self.base_url = settings.ollama_base_url
         self.default_model = settings.ollama_default_model
-        self.timeout = settings.ollama_timeout_seconds
+        self.timeout = httpx.Timeout(settings.ollama_timeout_seconds, connect=10.0)
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Lazily initializes and returns a persistent HTTP client."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self.timeout)
+        return self._client
+
+    async def close(self) -> None:
+        """Closes the persistent HTTP client. Call on application shutdown."""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
     async def generate_text(self, prompt: str, model: Optional[str] = None, system: Optional[str] = None) -> str:
         """Generates raw text completion from Ollama, with robust fallback if offline."""
         target_model = model or self.default_model
         url = f"{self.base_url}/api/generate"
-        payload = {
+        payload: Dict[str, Any] = {
             "model": target_model,
             "prompt": prompt,
             "stream": False
@@ -34,11 +58,11 @@ class OllamaService:
 
         logger.info(f"[Ollama] Generating text completion with model: {target_model}")
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(url, json=payload)
-                response.raise_for_status()
-                data = response.json()
-                return data.get("response", "")
+            client = await self._get_client()
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("response", "")
         except Exception as e:
             logger.warning(f"[Ollama Offline] Could not generate text via Ollama: {e}. Utilizing fallback mock response.")
             return self._generate_text_fallback(prompt)
@@ -69,51 +93,51 @@ class OllamaService:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                attempt = 0
-                last_error = ""
+            client = await self._get_client()
+            attempt = 0
+            last_error = ""
 
-                while attempt < max_retries:
-                    attempt += 1
-                    logger.info(f"[Ollama] Structured generation attempt {attempt}/{max_retries} with model: {target_model}")
+            while attempt < max_retries:
+                attempt += 1
+                logger.info(f"[Ollama] Structured generation attempt {attempt}/{max_retries} with model: {target_model}")
+                
+                try:
+                    response = await client.post(url, json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+                    raw_json = data.get("response", "").strip()
+
+                    # Attempt Pydantic validation
+                    parsed_obj = schema_class.model_validate_json(raw_json)
+                    logger.info("[Ollama] Structured validation PASSED.")
+                    return parsed_obj
+
+                except ValidationError as ve:
+                    logger.warning(f"[Ollama] Pydantic validation failed on attempt {attempt}: {ve}")
+                    last_error = str(ve)
                     
-                    try:
-                        response = await client.post(url, json=payload)
-                        response.raise_for_status()
-                        data = response.json()
-                        raw_json = data.get("response", "").strip()
+                    # Reflection & Self-Correction Loop
+                    correction_prompt = (
+                        f"Your previous JSON output failed validation with the following error:\n"
+                        f"{last_error}\n\n"
+                        f"Here was your invalid JSON output:\n{raw_json}\n\n"
+                        f"Please correct the JSON structure to fully comply with the schema and return ONLY the corrected JSON object."
+                    )
+                    payload["prompt"] = correction_prompt
 
-                        # Attempt Pydantic validation
-                        parsed_obj = schema_class.model_validate_json(raw_json)
-                        logger.info("[Ollama] Structured validation PASSED.")
-                        return parsed_obj
+                except (httpx.HTTPError, json.JSONDecodeError) as e:
+                    logger.warning(f"[Ollama] API/Decode error on attempt {attempt}: {e}")
+                    last_error = str(e)
 
-                    except ValidationError as ve:
-                        logger.warning(f"[Ollama] Pydantic validation failed on attempt {attempt}: {ve}")
-                        last_error = str(ve)
-                        
-                        # Reflection & Self-Correction Loop
-                        correction_prompt = (
-                            f"Your previous JSON output failed validation with the following error:\n"
-                            f"{last_error}\n\n"
-                            f"Here was your invalid JSON output:\n{raw_json}\n\n"
-                            f"Please correct the JSON structure to fully comply with the schema and return ONLY the corrected JSON object."
-                        )
-                        payload["prompt"] = correction_prompt
-
-                    except (httpx.HTTPError, json.JSONDecodeError) as e:
-                        logger.warning(f"[Ollama] API/Decode error on attempt {attempt}: {e}")
-                        last_error = str(e)
-
-                logger.error(f"[Ollama] Failed to generate valid structured output after {max_retries} attempts. Triggering schema-compliant mock fallback.")
-                return self._generate_fallback_mock(prompt, schema_class)
+            logger.error(f"[Ollama] Failed to generate valid structured output after {max_retries} attempts. Triggering schema-compliant mock fallback.")
+            return self._generate_fallback_mock(prompt, schema_class)
 
         except Exception as e:
             logger.warning(f"[Ollama Offline] Ollama server is unreachable: {e}. Generating schema-compliant mock fallback.")
             return self._generate_fallback_mock(prompt, schema_class)
 
     def _generate_text_fallback(self, prompt: str) -> str:
-        """Generates smart mock text content based on keywords in prompt."""
+        """Generates smart mock text content based on keywords in the prompt."""
         prompt_lower = prompt.lower()
         if "script" in prompt_lower:
             return (
@@ -136,7 +160,6 @@ class OllamaService:
         logger.info(f"[Ollama Fallback] Synthesizing mock payload for model class: {class_name}")
 
         # Try to guess target series or topic from prompt
-        import re
         topic = "Anime Spotlight"
         series_match = re.search(r"'(.*?)'|\"(.*?)\"", prompt)
         if series_match:
