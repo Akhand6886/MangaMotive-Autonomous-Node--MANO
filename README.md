@@ -1,126 +1,82 @@
-# MangaMotive: Fully Autonomous Agentic Worker Pipeline
+# MANO: Autonomous Multi-Agent Intelligence Harness
 
-![MangaMotive Banner](https://images.unsplash.com/photo-1541963463532-d68292c34b19?q=80&w=1200&auto=format&fit=crop)
+![MANO Banner](https://images.unsplash.com/photo-1541963463532-d68292c34b19?q=80&w=1200&auto=format&fit=crop)
 
-> **A low-power, fully autonomous AI publishing newsroom quietly manufacturing premium content for your website 24/7. Optimized for Raspberry Pi 5 8GB.**
-
----
-
-## 🌟 Executive Summary & Core Philosophy
-
-### **Do NOT build:**
-* ❌ One giant AI agent
-* ❌ One giant prompt
-* ❌ One giant monolithic workflow
-
-### **DO build:**
-* ✅ Many tiny deterministic workers
-* ✅ Each with exactly ONE focused responsibility
-* ✅ Each producing strict, predictable structured outputs
-
-When building autonomous publishing systems on resource-constrained hardware like a **Raspberry Pi 5 8GB**, relying on massive, monolithic AI agents fails catastrophically. As context windows grow, RAM usage explodes, outputs become inconsistent, hallucinations multiply, and debugging becomes impossible. 
-
-**MangaMotive** solves this by establishing a rigorous **7-Stage Deterministic Worker Pipeline**. By dividing complex reasoning into isolated, sequential tasks (e.g., extracting themes first, then writing based *only* on those themes), we drastically reduce the cognitive burden on the LLM. This enables tiny local models like **Gemma 4 E2B**, **Qwen2.5 3B**, or **Phi-3 Mini** to achieve incredible, state-of-the-art editorial quality without cooking your hardware.
+> **A 7-layer dynamic intelligence harness designed to orchestrate raw AI models into a coordinated, self-correcting, and learning thinking machine. Persists cumulative preferences and features a live execution dashboard with storyboard synchronizations.**
 
 ---
 
-## 🏗️ The 5 Pillars of Full Autonomy
+## 🏗️ Architectural Improvements (The 7 Layers)
+
+Instead of a fixed, sequential linear pipeline, the system has been re-architected into a generalized **7-Layer Intelligence Harness**:
 
 ```mermaid
 graph TD
-    A[Scheduler Worker: Continuous Daemon] -->|Triggers on Timetable| B[Data Collector: RAG & Scraping]
-    B -->|Clean Transcript Chunks| C[Theme Extractor: Small LLM]
-    C -->|Structured Editorial Intelligence| D[Review Writer: Small LLM]
-    D --> E[SEO Worker: Metadata & Slugs]
-    E --> F[Formatting Worker: Deterministic Cleanup]
-    F --> G{Pydantic Validation & Reflection}
-    G -->|Validation Failure| H[Self-Correction Loop]
-    H --> C
-    G -->|Success| I[Publishing Worker: Contentful CMA]
-    I --> J[SQLite Long-Term Memory & Goal Tracking]
+    User([User Prompt / Web UI]) -->|1. Interface Layer| Interface[FastAPI Task Parser]
+    Interface -->|Structured Task JSON| Planner[2. Executive Planner Brain]
+    Planner -->|Dynamic Plan Steps| Orchestrator[7. Orchestration Runtime]
+    Orchestrator -->|Dynamic Routing| Workers[3. Specialized Workers]
+    Workers -->|Invokes| Tools[5. Tool Layer: Search, Image, TTS, DB]
+    Workers -->|Structured Outputs| Evaluator[6. Evaluation Layer]
+    Evaluator -->|Fails Style/Fact Audits| Correction[Self-Correction Retry Loop]
+    Correction -->|Feedback Prompts| Workers
+    Evaluator -->|Passes Audits| Memory[4. Memory System: SQLite Project Memory]
+    Memory -->|Cumulative Persistence| Output[Visual Storyboard & DB Sync]
 ```
 
-### 1. Continuous Execution Loop (True Autonomy)
-Instead of executing a single run and exiting, MangaMotive runs as a persistent background daemon using `APScheduler` and `asyncio`. It polls `AnimeScheduleService` daily to monitor real-time timetable shifts and automatically queues recap jobs when new episodes air.
+### 1. Interface Layer (`static/index.html`, `static/app.js`)
+Where user prompts enter. It takes raw requests (e.g. *"Make a 60s YouTube short about Luffy's Gear 5 battle on Egghead island in a hype style"*) and uses the LLM parser to extract a `StructuredTask` containing:
+* `topic`
+* `style`
+* `target_platform`
+* `duration`
+* `assets_needed`
 
-### 2. LLM Tool Calling & Planning (ReAct Architecture)
-The pipeline orchestrator dynamically decides the execution flow based on local SQLite state and available tools, ensuring duplicate series or episodes are never ingested twice.
+### 2. Planner / Executive Brain (`workers/planner.py`)
+Analyzes the `StructuredTask` and dynamically compiles an ordered `ExecutionPlan` containing custom plan steps, descriptions, and worker assignments, rather than running a hardcoded timeline.
 
-### 3. Autonomous Web Research & RAG (Grounding)
-To eliminate LLM hallucinations, the **Data Collector Worker** gathers real-time facts, MyAnimeList synopses, and clean transcript chunks before any generation occurs.
+### 3. Specialized Workers (`workers/harness_workers.py`)
+Focused worker agents designed around specific tasks:
+* **Research Worker**: Collects synopses, characters, and transcript facts.
+* **Script Writer**: Compiles narration scripts, honoring tone and style guides.
+* **Lore Checker**: Audits script canon consistency in the franchise universe.
+* **Thumbnail Strategist**: Designs cover layouts and prompt commands.
+* **Voice Timing Worker**: Synthesizes narration tracks.
+* **Style Consistency / Formatter**: Formats headings and compiles SEO titles/slugs/tags.
+* **Fact Verifier**: Evaluates output factual consistency.
+* **Publishing Worker**: Merges final deliverables and syncs SQLite database.
 
-### 4. Reflection & Self-Correction (Agentic Feedback Loop)
-Equipped with an advanced **Pydantic Reflection Loop**, if Ollama generates malformed JSON or invalid schemas, the service intercepts the `ValidationError` and feeds it back to the model with explicit correction instructions up to 3 times before logging a failure.
+### 4. Memory System (`models.py`, `database.py`)
+Persists cumulative preference memory to guide agent generations. It maintains:
+* `preferred_tone`: e.g. Hype, energetic otaku review style.
+* `banned_phrases`: e.g. "In conclusion", "As an AI", "In summary".
+* `successful_hooks`: e.g. "This episode changed everything...".
+* `style_guide`: e.g. Keep paragraphs under 3 sentences for high readability.
+These memory entries are editable from the **Memory Store** panel of the Web Dashboard and are dynamically injected into agent prompts.
 
-### 5. Long-Term Memory & Goal Tracking
-The system maintains a robust SQLite database (`agent_memory.db`) tracking `Series`, `Episodes`, `Articles`, `Reviews`, and historical `Jobs` to manage long-term editorial milestones.
+### 5. Tool Layer (`services/tool_layer.py`)
+Programmatic capabilities provided to specialized workers:
+* `web_search(query)`: Real-time search fact retrieval (with local encyclopedia backup).
+* `generate_image(prompt)`: Generates/retrieves context-relevant visual image backdrops.
+* `text_to_speech(text)`: Synthesizes narration tracks.
+* `database_lookup(query)`: Queries local SQLite database history.
+* `ffmpeg_assemble(script, audio, images)`: Storyboard timeline compilation.
 
----
+### 6. Evaluation Layer (`services/evaluator.py`)
+Judges worker outputs before saving:
+* **Factual Consistency check**: Evaluates generated text against collected facts.
+* **Style Audits**: Filters out banned words and verifies tone.
+* **Engagement Prediction**: Scores clickability and retention (1-100).
+* **Self-Correction loop**: If a check fails, the orchestrator loops back to the worker (up to 3 times) with feedback to regenerate compliant text.
 
-## ⚙️ The 7 Specialized Workers
-
-### 1. Scheduler Worker (`workers/scheduler.py`)
-* **Responsibility**: Controls the entire system. Checks release schedules, starts pipelines automatically, queues jobs, and controls timing.
-* **AI Needed**: ❌ None. Pure Python async automation.
-
-### 2. Data Collector Worker (`workers/collector.py`)
-* **Responsibility**: Collects raw information. Fetches episode metadata, downloads subtitles, scrapes synopsis, ratings, and character data.
-* **AI Needed**: ❌ None. Mostly APIs + scraping.
-* **Output Example**:
-  ```json
-  {
-    "title": "One Piece Episode 1129",
-    "summary": "Luffy and his crew face off against Kizaru on Egghead Island...",
-    "subtitles": "[00:01] We must protect our friends at all costs!...",
-    "characters": ["Luffy", "Kizaru", "Vegapunk"]
-  }
-  ```
-
-### 3. Theme Extractor Worker (`workers/theme_extractor.py`)
-* **Responsibility**: Uses a small LLM to identify emotional themes, detect pacing, extract standout moments, and summarize narrative direction from cleaned transcript chunks.
-* **AI Needed**: ✅ Small LLM (`gemma:2b` / `qwen2.5`).
-* **Why Important**: Converts chaotic raw text into structured editorial intelligence.
-
-### 4. Review Writer Worker (`workers/review_writer.py`)
-* **Responsibility**: The main content generator. Takes structured themes from Worker 3 and drafts a beautifully flowing article.
-* **AI Needed**: ✅ Small LLM (`gemma:2b` / `qwen2.5`).
-* **Important**: The writer does NOT need to analyze everything anymore. Heavy reasoning was done earlier, dramatically improving small-model quality.
-
-### 5. SEO Worker (`workers/seo_worker.py`)
-* **Responsibility**: Separate SEO from writing. Generates SEO titles (<60 chars), slugs, meta descriptions (<160 chars), keywords, and tags.
-* **AI Needed**: ✅ Small LLM (`gemma:2b`).
-* **Why Separate?**: Combining SEO constraints into the main writing prompt severely pollutes prose quality.
-
-### 6. Formatting Worker (`workers/formatter.py`)
-* **Responsibility**: Pure cleanup layer. Cleans markdown, fixes heading hierarchy (ensuring H2/H3 compliance), removes duplicate whitespaces, calculates word counts, and extracts excerpts.
-* **AI Needed**: ❌ None. Pure deterministic Python regex.
-
-### 7. Publishing Worker (`workers/publisher.py`)
-* **Responsibility**: Final automation layer. Uploads binary media assets to Contentful, formats localized Contentful schemas (`review`, `blogPost`, `episodeSummary`), calls Contentful Management API, and synchronizes SQLite state.
-* **AI Needed**: ❌ None. Pure API automation.
-
----
-
-## 💻 Hardware & Software Stack
-
-### **Recommended Hardware**
-* **Raspberry Pi 5 8GB** (Active cooler & Official 27W PSU mandatory).
-* **NVMe SSD via PCIe HAT** (Do NOT run LLMs from microSD to prevent corruption).
-
-### **Software Stack**
-* **Runtime**: Ollama (`http://localhost:11434`).
-* **Models**: Gemma 4 E2B Q4_K_M, Qwen2.5 3B, Phi-3 Mini.
-* **Orchestration**: Python 3.11+, FastAPI, Pydantic v2, SQLAlchemy.
-* **Storage**: SQLite (`./data/agent_memory.db`).
-* **CMS**: Contentful Management API (CMA).
+### 7. Orchestration Runtime (`main.py`)
+* Controls task queues, retries, step progression status updates, and logs stdout recording for each worker.
 
 ---
 
 ## 🚀 Installation & Operating Manual
 
-### **1. Environment Setup**
-
-Clone the repository and install dependencies:
+### 1. Setup Environment
 ```bash
 cd "/Users/alpha/Desktop/antigavity/website agent"
 python3 -m venv venv
@@ -128,57 +84,30 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### **2. Configuration (`.env`)**
-
-Copy the example configuration file and populate your tokens:
+### 2. Start the Orchestrator Service
 ```bash
-cp .env.example .env
+./venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
 ```
-Ensure your `CONTENTFUL_MANAGEMENT_TOKEN`, `CONTENTFUL_SPACE_ID`, and `ANIMESCHEDULE_API_KEY` are correctly configured.
-
-### **3. Running the Agent Daemon**
-
-Start the FastAPI server and background worker loop:
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-```
+Open `http://localhost:8000` in your web browser to access the dashboard interface.
 
 ---
 
 ## 🌐 REST API Endpoints
 
-### **1. Manually Trigger a Pipeline Job**
-* **Endpoint**: `POST /api/trigger`
-* **Payload**:
-  ```json
-  {
-    "target_type": "episode_recap",
-    "series_title": "One Piece",
-    "episode_number": 1129
-  }
-  ```
-* **Response**: Returns the newly queued `Job` object and initiates background processing.
+### 1. Interface Parser
+* **Endpoint**: `POST /api/harness/parse`
+* **Payload**: `{"prompt": "Make an anime review video about Solo Leveling Episode 5"}`
+* **Response**: Returns a structured task (`topic`, `style`, `target_platform`, `duration`, `assets_needed`).
 
-### **2. Monitor Active & Historical Jobs**
-* **Endpoint**: `GET /api/jobs`
-* **Query Params**: `skip=0`, `limit=50`
+### 2. Trigger Pipeline Job
+* **Endpoint**: `POST /api/harness/trigger`
+* **Payload**: A valid `StructuredTask` JSON object.
+* **Response**: Queues the job and begins async dynamic execution.
 
-### **3. Inspect Specific Job State & Worker Payloads**
-* **Endpoint**: `GET /api/jobs/{job_id}`
-* **Response**: Returns the complete state progression, including `collector_data`, `theme_data`, `writer_data`, `seo_data`, `formatter_data`, and `publisher_data`.
+### 3. Get Persistent Memory Store
+* **Endpoint**: `GET /api/harness/memory`
+* **Response**: List of persistent style guide parameters.
 
-### **4. View Tracked Series Knowledge Base**
-* **Endpoint**: `GET /api/series`
-
----
-
-## 🏆 Current Achievements & Roadmap
-
-* **7-Worker Architecture**: Completely implemented in modular, high-performance Python.
-* **Zero-Loss Binary Uploads**: Seamlessly downloads remote media and pushes binary streams to Contentful CMA.
-* **Self-Correction Resilience**: Automatic 3-retry Pydantic reflection loop guarantees schema compliance.
-* **Local Source of Truth**: SQLite persistence prevents duplicate CMS entries.
-
-### **Future Enhancements**
-* **Cloud Image Generation**: Integrate Fal.ai or Replicate for dynamic thumbnail creation.
-* **Vector RAG**: Expand SQLite to support pgvector/ChromaDB for deep lore retrieval.
+### 4. Update Memory Store
+* **Endpoint**: `POST /api/harness/memory`
+* **Payload**: `{"key": "banned_phrases", "value": ["In conclusion", "As an AI"]}`
