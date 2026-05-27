@@ -504,6 +504,27 @@ async def list_series(skip: int = 0, limit: int = 50, db: Session = Depends(get_
     return [{"id": s.id, "title": s.title, "slug": s.slug, "type": s.series_type} for s in series]
 
 
+@app.get("/api/health")
+async def health_check(db: Session = Depends(get_db)):
+    """
+    Health check endpoint to verify database connectivity and operational status.
+    """
+    from sqlalchemy import text
+    try:
+        db.execute(text("SELECT 1")).scalar()
+    except Exception as e:
+        logger.error(f"Health check database connection failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database connection is unavailable"
+        )
+    return {
+        "status": "healthy",
+        "database": "connected",
+        "ollama_url": settings.ollama_base_url
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
