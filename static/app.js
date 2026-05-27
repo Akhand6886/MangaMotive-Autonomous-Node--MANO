@@ -522,6 +522,48 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // 9. Download Deliverables Button
+    const btnDownloadPackage = document.getElementById('btn-download-package');
+    if (btnDownloadPackage) {
+        btnDownloadPackage.addEventListener('click', async () => {
+            if (!activeJobId) return alert("No active job found to download.");
+            try {
+                const response = await fetch(`/api/jobs/${activeJobId}`);
+                if (!response.ok) throw new Error("Failed to fetch job data");
+                const job = await response.json();
+                
+                // Construct the download package
+                const downloadData = {
+                    job_id: job.id,
+                    series_title: job.series_title,
+                    target_type: job.target_type,
+                    title: job.writer_data?.draft_title || job.seo_data?.seo_title || "MANO Deliverables",
+                    slug: job.seo_data?.slug || "",
+                    script: job.writer_data?.draft_text || job.writer_data?.review_body_markdown || "",
+                    metadata: {
+                        description: job.seo_data?.meta_description || "",
+                        keywords: job.seo_data?.keywords || [],
+                        tags: job.seo_data?.tags || []
+                    },
+                    published_at: job.publisher_data?.published_at || new Date().toISOString()
+                };
+
+                const blob = new Blob([JSON.stringify(downloadData, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `deliverables-${job.series_title.toLowerCase().replace(/\s+/g, '-')}-${job.id.substring(0, 8)}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            } catch (error) {
+                console.error("Download Error:", error);
+                alert("Failed to export deliverables package.");
+            }
+        });
+    }
+
     // Cleanup intervals on page unload to prevent memory leaks
     window.addEventListener('beforeunload', () => {
         if (activeJobTimer) clearInterval(activeJobTimer);
