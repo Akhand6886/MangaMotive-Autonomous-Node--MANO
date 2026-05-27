@@ -193,6 +193,7 @@ async def process_single_job(job_id: str):
         memory_logs_accumulated = []
 
         # Layer 7: Orchestration Runtime execution loop
+        import time
         for index, step in enumerate(plan_steps):
             step_id = step["step_id"]
             worker_type = step["worker"]
@@ -203,6 +204,7 @@ async def process_single_job(job_id: str):
             flag_modified(job, "execution_plan")
             db.commit()
 
+            start_time = time.time()
             worker_output = {}
             step_log = f"Invoking {worker_type} for '{step_name}'.\n"
 
@@ -313,6 +315,10 @@ async def process_single_job(job_id: str):
                 except Exception as ex:
                     step_log += f"Error executing worker action on attempt {attempt}: {ex}\n"
                     if attempt == max_correction_retries:
+                        elapsed_time = time.time() - start_time
+                        step["log"] = step_log + f"\nStep execution failed after {elapsed_time:.2f} seconds.\n"
+                        flag_modified(job, "execution_plan")
+                        db.commit()
                         raise ex
 
             # Save step output to short-term memory
@@ -328,9 +334,10 @@ async def process_single_job(job_id: str):
                 job.formatter_data = worker_output
 
             # Update step details
+            elapsed_time = time.time() - start_time
             step["status"] = "completed"
             step["output"] = json.dumps(worker_output, indent=2)
-            step["log"] = step_log
+            step["log"] = step_log + f"\nStep execution completed in {elapsed_time:.2f} seconds.\n"
             
             memory_logs_accumulated.append(f"Loaded memory guidelines for step '{step_name}'.")
             
