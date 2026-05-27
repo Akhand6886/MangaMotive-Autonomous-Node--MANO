@@ -130,9 +130,28 @@ class ExecutionPlan(BaseModel):
     plan_title: str = Field(..., description="Short title of execution plan")
     steps: List[ExecutionStep] = Field(..., description="Ordered list of steps to execute")
 
+from pydantic import BaseModel, Field, field_validator
+import re
+
 class HarnessRequest(BaseModel):
     """Raw text request for the Interface Layer parser."""
-    prompt: str = Field(..., min_length=3, description="Raw request string from the user")
+    prompt: str = Field(
+        ...,
+        min_length=3,
+        max_length=1000,
+        description="Raw request string from the user"
+    )
+
+    @field_validator("prompt")
+    @classmethod
+    def sanitize_prompt(cls, v: str) -> str:
+        """Sanitizes prompt input by stripping HTML tags and normalizing whitespaces."""
+        cleaned = re.sub(r"<[^>]*>", "", v)
+        cleaned = " ".join(cleaned.split())
+        if not cleaned:
+            raise ValueError("Prompt cannot be empty after sanitization")
+        return cleaned
+
 
 class ProjectMemorySchema(BaseModel):
     """Schema for reading/writing editorial preference memory settings."""
