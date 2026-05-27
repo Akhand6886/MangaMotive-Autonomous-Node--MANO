@@ -125,6 +125,9 @@ class OllamaService:
                     )
                     payload["prompt"] = correction_prompt
 
+                except (httpx.ConnectError, httpx.ConnectTimeout) as ce:
+                    logger.warning(f"[Ollama Connection Error] Cannot connect to Ollama server: {ce}. Skipping retries and activating fallback.")
+                    break
                 except (httpx.HTTPError, json.JSONDecodeError) as e:
                     logger.warning(f"[Ollama] API/Decode error on attempt {attempt}: {e}")
                     last_error = str(e)
