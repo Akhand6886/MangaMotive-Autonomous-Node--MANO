@@ -260,6 +260,7 @@ async def process_single_job(job_id: str):
             
             logger.info(f"[Orchestrator] Step {index+1}/{len(plan_steps)}: '{step_name}' -> routing to '{worker_type}'")
             step["status"] = "running"
+            job.execution_plan = plan_steps
             flag_modified(job, "execution_plan")
             db.commit()
 
@@ -396,6 +397,7 @@ async def process_single_job(job_id: str):
                     if attempt == max_correction_retries:
                         elapsed_time = time.time() - start_time
                         step["log"] = step_log + f"\nStep execution failed after {elapsed_time:.2f} seconds.\n"
+                        job.execution_plan = plan_steps
                         flag_modified(job, "execution_plan")
                         db.commit()
                         await broadcast_event("step_completed", {
@@ -426,6 +428,7 @@ async def process_single_job(job_id: str):
             
             memory_logs_accumulated.append(f"Loaded memory guidelines for step '{step_name}'.")
             
+            job.execution_plan = plan_steps
             flag_modified(job, "execution_plan")
             job.memory_logs = memory_logs_accumulated
             flag_modified(job, "memory_logs")
