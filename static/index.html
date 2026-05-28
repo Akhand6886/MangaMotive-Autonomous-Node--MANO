@@ -242,6 +242,7 @@
                                 <div class="tabs-sub">
                                     <button class="tab-sub-btn active" data-subtab="script">Script Narration</button>
                                     <button class="tab-sub-btn" data-subtab="meta">Metadata Details</button>
+                                    <button class="tab-sub-btn" data-subtab="storyboard-edit">Edit Storyboard</button>
                                     <button class="btn btn-small btn-accent" id="btn-download-package" style="margin-left: auto; height: 30px; padding: 0 10px; font-size: 11px;">Download Deliverables</button>
                                 </div>
                                 <div class="tab-sub-content active" id="subtab-script">
@@ -252,6 +253,17 @@
                                         <div><strong>Meta Description:</strong> <span id="output-meta-description">-</span></div>
                                         <div><strong>Keywords:</strong> <span id="output-keywords">-</span></div>
                                         <div><strong>Tags:</strong> <span id="output-tags">-</span></div>
+                                    </div>
+                                </div>
+                                <div class="tab-sub-content" id="subtab-storyboard-edit">
+                                    <div class="slides-editor-list" id="slides-editor-list">
+                                        <!-- Populated dynamically via JS -->
+                                    </div>
+                                    <div class="form-actions mt-1 justify-end" style="border-top: 1px solid var(--border-color); padding-top: 10px;">
+                                        <button class="btn btn-accent btn-small" id="btn-save-storyboard">
+                                            <span>Regenerate & Re-verify Package</span>
+                                            <span class="spinner hidden" id="save-storyboard-spinner"></span>
+                                        </button>
                                     </div>
                                 </div>
                             </div>
