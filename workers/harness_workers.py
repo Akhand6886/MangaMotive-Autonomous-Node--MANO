@@ -175,17 +175,44 @@ class ThumbnailStrategistWorker:
 
 class VoiceTimingWorker:
     """Generates narration audio and outputs timing layout."""
-    async def process(self, script_text: str) -> Dict[str, Any]:
+    async def process(self, script_text: str, topic: str = "Anime") -> Dict[str, Any]:
         logger.info("[Voice Worker] Synthesizing narration audio path...")
         tts_result = await ToolLayer.text_to_speech(script_text)
+        
+        try:
+            sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', script_text) if s.strip()]
+        except re.error:
+            sentences = [s.strip() for s in script_text.split(".") if s.strip()]
+
+        if not sentences:
+            sentences = [script_text[:200] or "Narration content"]
+
+        timing_map = []
+        total_duration = tts_result["duration_seconds"]
+        slide_duration = total_duration / len(sentences) if sentences else 10
+
+        for i, sent in enumerate(sentences):
+            start_t = i * slide_duration
+            end_t = (i + 1) * slide_duration
+            
+            image_prompt = f"High-quality anime background representing: {sent[:120]}. Theme: {topic}."
+            image_url = await ToolLayer.generate_image(image_prompt)
+            
+            timing_map.append({
+                "slide_number": i + 1,
+                "start": round(start_t, 2),
+                "end": round(end_t, 2),
+                "subtitle": sent,
+                "image_prompt": image_prompt,
+                "image_url": image_url
+            })
+
         return {
             "audio_url": tts_result["audio_url"],
             "duration_seconds": tts_result["duration_seconds"],
-            "timing_map": [
-                {"start": 0, "end": 5, "subtitle": script_text[:50]},
-                {"start": 5, "end": 15, "subtitle": script_text[50:150] if len(script_text) > 150 else script_text[50:]}
-            ]
+            "timing_map": timing_map
         }
+
 
 class StyleConsistencyWorker:
     """Optimizes title, generates metadata tags, slug, and formats markdown headings."""
