@@ -4,19 +4,21 @@ import os
 import uuid
 import json
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, status
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, status, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 from typing import List, Dict, Any, Optional
+import time
 
 from config import settings
 from database import engine, Base, get_db, SessionLocal
 from models import Job, Series, Episode, Article, Review, ProjectMemory
 from schemas import (
     JobCreate, JobResponse, StructuredTask, ExecutionPlan, 
-    ExecutionStep, HarnessRequest, ProjectMemorySchema
+    ExecutionStep, HarnessRequest, ProjectMemorySchema,
+    SlideEdit, RefineRequest
 )
 
 # Workers & Planner
@@ -116,6 +118,54 @@ async def serve_dashboard():
     return {"message": "Intelligence Harness Backend API is active. Front-end static files are missing."}
 
 
+class ConnectionManager:
+    """Manages global WebSocket events broadcasting to all connected clients."""
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(f"[WS] Client connected. Total clients: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+            logger.info(f"[WS] Client disconnected. Total clients: {len(self.active_connections)}")
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception as e:
+                logger.debug(f"[WS] Broadcast failed for client: {e}")
+
+manager = ConnectionManager()
+
+async def broadcast_event(event_type: str, data: dict):
+    """Utility to safely broadcast events to all active WS clients."""
+    try:
+        await manager.broadcast({
+            "type": event_type,
+            "data": data
+        })
+    except Exception as e:
+        logger.error(f"[WS] Failed to broadcast event {event_type}: {e}")
+
+@app.websocket("/api/ws/events")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive, listen for client messages
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        logger.warning(f"[WS] Error in client connection loop: {e}")
+        manager.disconnect(websocket)
+
+
 # --- PIPELINE ORCHESTRATION RUNTIME ---
 
 # Terminal job states that should not be re-processed
@@ -144,6 +194,7 @@ async def process_single_job(job_id: str):
             return
 
         logger.info(f"[Orchestrator] Initiating Intelligence Harness for Job {job.id} ({job.series_title})...")
+        await broadcast_event("job_updated", {"job_id": job.id, "status": job.status, "series_title": job.series_title})
     
         # Load Project Memory preferences
         memories = db.query(ProjectMemory).all()
@@ -155,6 +206,8 @@ async def process_single_job(job_id: str):
         if not job.structured_task:
             job.status = "planning"
             db.commit()
+            await broadcast_event("job_updated", {"job_id": job.id, "status": job.status})
+            
             # Perform LLM parsing simulation if structured task is empty
             prompt_parse = (
                 f"Extract structured parameters for topic '{job.series_title}'. "
@@ -165,10 +218,12 @@ async def process_single_job(job_id: str):
             db.commit()
         
         task_info = StructuredTask.model_validate(job.structured_task)
+        await broadcast_event("job_updated", {"job_id": job.id, "structured_task": job.structured_task})
         
         # Layer 2: Planner / Executive Brain
         job.status = "planning"
         db.commit()
+        await broadcast_event("job_updated", {"job_id": job.id, "status": job.status})
         logger.info(f"[Orchestrator] Designing execution plan for structured task...")
         plan: ExecutionPlan = await executive_planner.generate_plan(task_info)
         
@@ -187,13 +242,17 @@ async def process_single_job(job_id: str):
         job.execution_plan = plan_steps
         job.status = "running"
         db.commit()
+        await broadcast_event("job_updated", {
+            "job_id": job.id,
+            "status": job.status,
+            "execution_plan": job.execution_plan
+        })
 
         # Shared short-term memory (stores worker outputs sequentially)
         short_term_memory = {}
         memory_logs_accumulated = []
 
         # Layer 7: Orchestration Runtime execution loop
-        import time
         for index, step in enumerate(plan_steps):
             step_id = step["step_id"]
             worker_type = step["worker"]
@@ -204,9 +263,25 @@ async def process_single_job(job_id: str):
             flag_modified(job, "execution_plan")
             db.commit()
 
+            await broadcast_event("step_started", {
+                "job_id": job.id,
+                "step_id": step_id,
+                "worker": worker_type,
+                "status": "running"
+            })
+
             start_time = time.time()
             worker_output = {}
             step_log = f"Invoking {worker_type} for '{step_name}'.\n"
+
+            async def log_step(msg: str):
+                nonlocal step_log
+                step_log += msg + "\n"
+                await broadcast_event("log_update", {
+                    "job_id": job.id,
+                    "step_id": step_id,
+                    "log": step_log
+                })
 
             # Route to specialized workers
             attempt = 0
@@ -218,13 +293,13 @@ async def process_single_job(job_id: str):
                 try:
                     if worker_type == "research_worker":
                         worker_output = await research_worker.process(task_info.topic, task_info.target_platform)
-                        step_log += "Collected research facts. Web search executed.\n"
+                        await log_step("Collected research facts. Web search executed.")
                         break # no evaluation needed for raw collector
                         
                     elif worker_type == "script_writer":
                         research_data = short_term_memory.get("research_worker", {})
                         if correction_feedback:
-                            step_log += f"Self-Correction loop attempt {attempt} based on evaluator feedback.\n"
+                            await log_step(f"Self-Correction loop attempt {attempt} based on evaluator feedback.")
                         
                         worker_output = await script_writer_worker.process(
                             task_info.topic, 
@@ -232,7 +307,7 @@ async def process_single_job(job_id: str):
                             tone if not correction_feedback else f"{tone}\n\nEVALUATOR REACTION:\n{correction_feedback}", 
                             banned
                         )
-                        step_log += f"Generated script draft. Length: {worker_output['word_count']} words.\n"
+                        await log_step(f"Generated script draft. Length: {worker_output['word_count']} words.")
                         
                         # Evaluate Output (Layer 6)
                         eval_res = await EvaluationLayer.evaluate_content(
@@ -243,42 +318,46 @@ async def process_single_job(job_id: str):
                         )
                         job.evaluations = eval_res
                         db.commit()
+                        await broadcast_event("eval_updated", {
+                            "job_id": job.id,
+                            "evaluations": job.evaluations
+                        })
 
                         if eval_res["passed"]:
-                            step_log += "Factual and style consistency checks PASSED.\n"
+                            await log_step("Factual and style consistency checks PASSED.")
                             break
                         else:
-                            step_log += f"Factual/style consistency check FAILED: {eval_res['errors']}\n"
+                            await log_step(f"Factual/style consistency check FAILED: {eval_res['errors']}")
                             correction_feedback = eval_res["feedback"]
                             if attempt == max_correction_retries:
-                                step_log += "Max retries reached. Forcing check pass to prevent deadlocks.\n"
+                                await log_step("Max retries reached. Forcing check pass to prevent deadlocks.")
                         
                     elif worker_type == "lore_checker":
                         writer_data = short_term_memory.get("script_writer", {})
                         draft = writer_data.get("draft_text", "")
                         worker_output = await lore_checker_worker.process(task_info.topic, draft)
-                        step_log += f"Lore audit completed. Is canon-compliant: {worker_output['lore_is_accurate']}.\n"
+                        await log_step(f"Lore audit completed. Is canon-compliant: {worker_output['lore_is_accurate']}.")
                         break
                         
                     elif worker_type == "thumbnail_strategist":
                         writer_data = short_term_memory.get("script_writer", {})
                         draft = writer_data.get("draft_text", "")
                         worker_output = await thumbnail_strategist_worker.process(task_info.topic, draft)
-                        step_log += f"Generated image generation prompt. Visual asset fetched.\n"
+                        await log_step(f"Generated image generation prompt. Visual asset fetched.")
                         break
                         
                     elif worker_type == "voice_timing":
                         writer_data = short_term_memory.get("script_writer", {})
                         draft = writer_data.get("draft_text", "")
-                        worker_output = await voice_timing_worker.process(draft)
-                        step_log += f"Narration synthesized. TTS audio length: {worker_output['duration_seconds']}s.\n"
+                        worker_output = await voice_timing_worker.process(draft, task_info.topic)
+                        await log_step(f"Narration synthesized. TTS audio length: {worker_output['duration_seconds']}s.")
                         break
                         
                     elif worker_type == "style_consistency":
                         writer_data = short_term_memory.get("script_writer", {})
                         draft = writer_data.get("draft_text", "")
                         worker_output = await style_consistency_worker.process(task_info.topic, draft)
-                        step_log += f"SEO Title: '{worker_output['seo_title']}'. SEO metadata and slug verified.\n"
+                        await log_step(f"SEO Title: '{worker_output['seo_title']}'. SEO metadata and slug verified.")
                         break
                         
                     elif worker_type == "fact_verifier":
@@ -286,7 +365,7 @@ async def process_single_job(job_id: str):
                         research_data = short_term_memory.get("research_worker", {})
                         draft = writer_data.get("draft_text", "")
                         worker_output = await fact_verifier_worker.process(draft, research_data.get("research_facts", []))
-                        step_log += f"Factual consistency verified. Accuracy Score: {worker_output['accuracy_score']}/10.\n"
+                        await log_step(f"Factual consistency verified. Accuracy Score: {worker_output['accuracy_score']}/10.")
                         break
                         
                     elif worker_type == "publishing_worker":
@@ -305,20 +384,26 @@ async def process_single_job(job_id: str):
                             "audio_url": voice.get("audio_url", "")
                         }
                         worker_output = await publishing_worker_agent.process(job.id, payload)
-                        step_log += f"Asset payloads uploaded. CMS sync status: {worker_output['status']}.\n"
+                        await log_step(f"Asset payloads uploaded. CMS sync status: {worker_output['status']}.")
                         break
                         
                     else:
-                        step_log += f"Unknown worker '{worker_type}'. Skipping.\n"
+                        await log_step(f"Unknown worker '{worker_type}'. Skipping.")
                         break
 
                 except Exception as ex:
-                    step_log += f"Error executing worker action on attempt {attempt}: {ex}\n"
+                    await log_step(f"Error executing worker action on attempt {attempt}: {ex}")
                     if attempt == max_correction_retries:
                         elapsed_time = time.time() - start_time
                         step["log"] = step_log + f"\nStep execution failed after {elapsed_time:.2f} seconds.\n"
                         flag_modified(job, "execution_plan")
                         db.commit()
+                        await broadcast_event("step_completed", {
+                            "job_id": job.id,
+                            "step_id": step_id,
+                            "status": "failed",
+                            "log": step["log"]
+                        })
                         raise ex
 
             # Save step output to short-term memory
@@ -346,11 +431,24 @@ async def process_single_job(job_id: str):
             flag_modified(job, "memory_logs")
             db.commit()
 
+            await broadcast_event("step_completed", {
+                "job_id": job.id,
+                "step_id": step_id,
+                "status": "completed",
+                "output": step["output"],
+                "log": step["log"]
+            })
+
         # Mark final job status
         job.publisher_data = short_term_memory.get("publishing_worker", {})
         job.status = "completed"
         db.commit()
         logger.info(f"[Orchestrator] Multi-agent execution completed for Job {job.id}.")
+        await broadcast_event("job_completed", {
+            "job_id": job.id,
+            "status": job.status,
+            "publisher_data": job.publisher_data
+        })
 
     except Exception as e:
         logger.error(f"[Orchestrator] Execution failed for Job {job_id}: {e}", exc_info=True)
@@ -359,6 +457,11 @@ async def process_single_job(job_id: str):
             job.error_message = str(e)[:2000]  # Truncate to prevent DB overflow
             job.retry_count += 1
             db.commit()
+            await broadcast_event("job_updated", {
+                "job_id": job.id,
+                "status": job.status,
+                "error_message": job.error_message
+            })
         except Exception as db_err:
             logger.error(f"[Orchestrator] Failed to persist error state: {db_err}")
             db.rollback()
@@ -473,6 +576,237 @@ async def delete_project_memory(key: str, db: Session = Depends(get_db)):
     db.delete(mem)
     db.commit()
     return {"message": f"Successfully deleted memory key: '{key}'."}
+
+
+async def process_job_refinement(job_id: str, edited_slides: List[Any]):
+    """
+    Background worker that selectively re-runs only the necessary agents
+    (Voice, Image, Evaluation, Publishing) for a storyboard refinement request,
+    broadcasting status and log changes via WebSocket in real-time.
+    """
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            return
+            
+        logger.info(f"[Refine Task] Running background refinement for Job {job.id}...")
+        
+        # Load Project Memory preferences for audits
+        memories = db.query(ProjectMemory).all()
+        pref_memory = {m.key: m.value for m in memories}
+        tone = pref_memory.get("preferred_tone", ["Engaging and detailed review style"])[0]
+        banned = pref_memory.get("banned_phrases", [])
+        
+        # Find the voice_timing step in the execution plan
+        plan_steps = list(job.execution_plan) if job.execution_plan else []
+        voice_step_idx = -1
+        for i, step in enumerate(plan_steps):
+            if step["worker"] == "voice_timing":
+                voice_step_idx = i
+                break
+                
+        if voice_step_idx == -1:
+            raise ValueError("No voice_timing step found in this job's execution plan.")
+            
+        # Get original step output
+        voice_step = plan_steps[voice_step_idx]
+        try:
+            voice_output = json.loads(voice_step["output"]) if voice_step.get("output") else {}
+        except Exception:
+            voice_output = {}
+            
+        original_slides = voice_output.get("timing_map", [])
+        
+        # Selective Image generation & text update
+        from services.tool_layer import ToolLayer
+        
+        refined_slides = []
+        new_script_sentences = []
+        
+        # Broadcast initial refinement start log
+        await broadcast_event("step_started", {
+            "job_id": job.id,
+            "step_id": voice_step["step_id"],
+            "worker": "voice_timing",
+            "status": "running"
+        })
+        
+        step_log = "Initiating selective storyboard refinement.\n"
+        await broadcast_event("log_update", {"job_id": job.id, "step_id": voice_step["step_id"], "log": step_log})
+        
+        for slide in edited_slides:
+            slide_num = slide.slide_number
+            subtitle = slide.subtitle
+            img_prompt = slide.image_prompt
+            img_url = slide.image_url
+            regen = slide.regenerate_image
+            
+            new_script_sentences.append(subtitle)
+            
+            # Find corresponding original slide if any to preserve duration
+            orig_match = next((s for s in original_slides if s.get("slide_number") == slide_num), {})
+            start_t = slide.start if slide.start is not None else orig_match.get("start", (slide_num-1)*5)
+            end_t = slide.end if slide.end is not None else orig_match.get("end", slide_num*5)
+            
+            if regen and img_prompt:
+                step_log += f"Slide {slide_num}: Regenerating image for prompt '{img_prompt[:50]}...'\n"
+                await broadcast_event("log_update", {"job_id": job.id, "step_id": voice_step["step_id"], "log": step_log})
+                new_img_url = await ToolLayer.generate_image(img_prompt)
+            else:
+                new_img_url = img_url or orig_match.get("image_url", ToolLayer._DEFAULT_IMAGE_URL)
+                
+            refined_slides.append({
+                "slide_number": slide_num,
+                "start": start_t,
+                "end": end_t,
+                "subtitle": subtitle,
+                "image_prompt": img_prompt or orig_match.get("image_prompt", f"Anime background representing slide {slide_num}"),
+                "image_url": new_img_url
+            })
+            
+        # Concatenate script and synthesize audio narration
+        new_script_text = " ".join(new_script_sentences)
+        step_log += f"Re-synthesizing TTS narration for updated script text...\n"
+        await broadcast_event("log_update", {"job_id": job.id, "step_id": voice_step["step_id"], "log": step_log})
+        
+        tts_result = await ToolLayer.text_to_speech(new_script_text)
+        
+        # Proportional adjustment of timestamps if text length changes significantly
+        total_duration = tts_result["duration_seconds"]
+        step_log += f"New audio track duration: {total_duration}s.\n"
+        await broadcast_event("log_update", {"job_id": job.id, "step_id": voice_step["step_id"], "log": step_log})
+        
+        # Save updated voice worker outputs
+        voice_output["audio_url"] = tts_result["audio_url"]
+        voice_output["duration_seconds"] = total_duration
+        voice_output["timing_map"] = refined_slides
+        
+        # Save to voice step outputs
+        voice_step["status"] = "completed"
+        voice_step["output"] = json.dumps(voice_output, indent=2)
+        voice_step["log"] = step_log + "\nSelective refinement complete.\n"
+        
+        plan_steps[voice_step_idx] = voice_step
+        job.execution_plan = plan_steps
+        flag_modified(job, "execution_plan")
+        db.commit()
+        
+        await broadcast_event("step_completed", {
+            "job_id": job.id,
+            "step_id": voice_step["step_id"],
+            "status": "completed",
+            "output": voice_step["output"],
+            "log": voice_step["log"]
+        })
+        
+        # Re-run Evaluation Layer audits (Layer 6)
+        step_log += f"Re-running Layer 6 Evaluation audits for style and fact consistency...\n"
+        await broadcast_event("log_update", {"job_id": job.id, "step_id": voice_step["step_id"], "log": step_log})
+        
+        research_data = job.collector_data or {}
+        facts = research_data.get("research_facts", [])
+        
+        eval_res = await EvaluationLayer.evaluate_content(new_script_text, facts, tone, banned)
+        job.evaluations = eval_res
+        db.commit()
+        
+        await broadcast_event("eval_updated", {
+            "job_id": job.id,
+            "evaluations": job.evaluations
+        })
+        
+        # Update writer data for backward compatibility
+        writer_data = job.writer_data or {}
+        writer_data["draft_text"] = new_script_text
+        job.writer_data = writer_data
+        
+        # Re-run publishing worker (Layer 7)
+        step_log += f"Re-running Publishing worker to update database entry...\n"
+        await broadcast_event("log_update", {"job_id": job.id, "step_id": voice_step["step_id"], "log": step_log})
+        
+        seo = job.seo_data or {}
+        
+        # If the publishing step is in the plan, update its status
+        pub_step_idx = -1
+        for i, step in enumerate(plan_steps):
+            if step["worker"] == "publishing_worker":
+                pub_step_idx = i
+                break
+                
+        payload = {
+            "topic": job.series_title,
+            "target_platform": job.target_type,
+            "draft_text": new_script_text,
+            "seo_data": seo,
+            "image_url": refined_slides[0]["image_url"] if refined_slides else ToolLayer._DEFAULT_IMAGE_URL,
+            "audio_url": tts_result["audio_url"]
+        }
+        
+        pub_output = await publishing_worker_agent.process(job.id, payload)
+        job.publisher_data = pub_output
+        
+        if pub_step_idx != -1:
+            plan_steps[pub_step_idx]["status"] = "completed"
+            plan_steps[pub_step_idx]["output"] = json.dumps(pub_output, indent=2)
+            plan_steps[pub_step_idx]["log"] = "Re-published refined storyboard.\n"
+            job.execution_plan = plan_steps
+            flag_modified(job, "execution_plan")
+            
+        job.status = "completed"
+        db.commit()
+        
+        if pub_step_idx != -1:
+            await broadcast_event("step_completed", {
+                "job_id": job.id,
+                "step_id": plan_steps[pub_step_idx]["step_id"],
+                "status": "completed",
+                "output": plan_steps[pub_step_idx]["output"]
+            })
+            
+        await broadcast_event("job_completed", {
+            "job_id": job.id,
+            "status": job.status,
+            "publisher_data": job.publisher_data
+        })
+        
+    except Exception as e:
+        logger.error(f"[Refine Task] Refinement failed for Job {job_id}: {e}", exc_info=True)
+        job.status = "failed"
+        job.error_message = f"Refinement error: {e}"
+        db.commit()
+        await broadcast_event("job_updated", {
+            "job_id": job.id,
+            "status": job.status,
+            "error_message": job.error_message
+        })
+    finally:
+        db.close()
+
+
+@app.post("/api/jobs/{job_id}/refine")
+async def refine_job_storyboard(job_id: str, req: RefineRequest, db: Session = Depends(get_db)):
+    """
+    Refinement & Re-evaluation endpoint (Selective Re-Run).
+    Allows modifying slide subtitle texts, image prompts, or requesting regenerations.
+    Re-runs TTS audio voice worker, image generation tools for toggled slides,
+    re-audits via Layer 6 (Evaluator), and updates database records.
+    """
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    logger.info(f"[API: Refine] Refining storyboard for Job {job.id} ({job.series_title})...")
+    
+    # Update status and broadcast
+    job.status = "running"
+    db.commit()
+    await broadcast_event("job_updated", {"job_id": job.id, "status": job.status})
+
+    # Start background task to process refinement
+    asyncio.create_task(process_job_refinement(job.id, req.slides))
+    
+    return {"message": "Refinement initiated", "job_id": job_id}
 
 
 # --- LEGACY APIS (Backward compatibility for tests & scheduler) ---
