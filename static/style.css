@@ -957,3 +957,108 @@ input[type="text"] {
     background-color: rgba(245, 158, 11, 0.1);
     color: var(--warning);
 }
+
+
+/* Storyboard Slide Editor Styling */
+.slides-editor-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 10px;
+    max-height: 400px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.slide-edit-card {
+    background-color: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px;
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    transition: var(--transition-smooth);
+}
+
+.slide-edit-card:hover {
+    background-color: rgba(255, 255, 255, 0.04);
+    border-color: rgba(79, 70, 229, 0.2);
+}
+
+.slide-edit-thumb {
+    width: 100px;
+    aspect-ratio: 16/9;
+    background-color: #000;
+    border-radius: 4px;
+    overflow: hidden;
+    flex-shrink: 0;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.slide-edit-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.slide-edit-fields {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.slide-edit-row {
+    display: flex;
+    gap: 12px;
+}
+
+.slide-edit-group {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.slide-edit-group label {
+    font-size: 9px;
+    margin-bottom: 2px;
+}
+
+.slide-edit-group input, .slide-edit-group textarea {
+    width: 100%;
+    background-color: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 6px 8px;
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: 12px;
+    outline: none;
+}
+
+.slide-edit-group textarea {
+    resize: vertical;
+    min-height: 40px;
+}
+
+.slide-edit-group input:focus, .slide-edit-group textarea:focus {
+    border-color: var(--accent);
+}
+
+.slide-regen-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+    margin-top: 4px;
+}
+
+.slide-regen-toggle input {
+    cursor: pointer;
+}
+
