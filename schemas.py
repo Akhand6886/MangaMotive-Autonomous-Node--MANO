@@ -158,3 +158,20 @@ class ProjectMemorySchema(BaseModel):
     key: str = Field(..., min_length=1, description="Memory identifier (preferred_tone, banned_phrases, style_guide, successful_hooks)")
     value: List[str] = Field(..., description="Array of strings representing memory content")
 
+
+class SlideEdit(BaseModel):
+    """Schema representing an edited slide within a storyboard."""
+    slide_number: int = Field(..., description="1-indexed number of the slide")
+    start: float = Field(..., description="Start timestamp of the slide in seconds")
+    end: float = Field(..., description="End timestamp of the slide in seconds")
+    subtitle: str = Field(..., description="Subtitles/script text for the slide")
+    image_prompt: Optional[str] = Field(None, description="Image generation prompt for this slide")
+    image_url: Optional[str] = Field(None, description="Current image URL of the slide")
+    regenerate_image: Optional[bool] = Field(default=False, description="Whether to regenerate the slide's visual asset")
+
+
+class RefineRequest(BaseModel):
+    """Request payload for the selective refinement endpoint."""
+    slides: List[SlideEdit] = Field(..., description="List of edited slides to rebuild/re-evaluate")
+
+
