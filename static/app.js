@@ -219,17 +219,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // 4. Job Poller Runtime
+    // 4. Job Poller Runtime (Deprecated polling, using WebSockets; runs one initial load)
     function startJobPoller(jobId) {
         if (activeJobTimer) clearInterval(activeJobTimer);
-        
-        // Immediate fetch
         pollJobState(jobId);
-        
-        // Interval poll
-        activeJobTimer = setInterval(() => {
-            pollJobState(jobId);
-        }, 2000);
     }
 
     async function pollJobState(jobId) {
@@ -368,6 +361,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 videoCanvasOverlay.textContent = "Audio slide compile complete.";
             }
 
+            populateStoryboardEditor(steps);
+
         } else {
             finalOutputCard.classList.add('hidden');
         }
@@ -410,7 +405,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 }) || storyboardSlides[storyboardSlides.length - 1];
 
                 if (activeSlide) {
-                    videoCanvasOverlay.textContent = activeSlide.subtitle;
+                    videoCanvasOverlay.textContent = activeSlide.subtitle || activeSlide.text || "Narration ready.";
+                    if (activeSlide.image_url && videoCanvasSlide.src !== activeSlide.image_url) {
+                        videoCanvasSlide.src = activeSlide.image_url;
+                    }
                 }
             }
 
@@ -569,4 +567,237 @@ document.addEventListener('DOMContentLoaded', () => {
         if (activeJobTimer) clearInterval(activeJobTimer);
         if (playbackInterval) clearInterval(playbackInterval);
     });
+
+    // --- WebSockets Event Hub Client ---
+    let socket = null;
+     
+    function connectWebSocket() {
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        const wsUrl = `${wsProtocol}://${window.location.host}/api/ws/events`;
+        socket = new WebSocket(wsUrl);
+         
+        socket.onopen = () => {
+            console.log("WebSocket connected to Event Hub.");
+        };
+         
+        socket.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                console.log("WS Event:", msg.type, msg.data);
+                handleWebSocketEvent(msg.type, msg.data);
+            } catch (e) {
+                console.error("Error parsing WS message:", e);
+            }
+        };
+         
+        socket.onclose = () => {
+            console.warn("WebSocket disconnected. Retrying connection in 3 seconds...");
+            setTimeout(connectWebSocket, 3000);
+        };
+         
+        socket.onerror = (err) => {
+            console.error("WebSocket error:", err);
+        };
+    }
+
+    async function handleWebSocketEvent(type, data) {
+        if (type === 'job_updated' || type === 'job_completed') {
+            const activeTab = document.querySelector('.nav-btn.active').getAttribute('data-tab');
+            if (activeTab === 'history') {
+                loadJobHistory();
+            }
+        }
+
+        if (!activeJobId || data.job_id !== activeJobId) return;
+
+        if (type === 'job_updated') {
+            const response = await fetch(`/api/jobs/${activeJobId}`);
+            if (response.ok) {
+                const job = await response.json();
+                updateExecutionUI(job);
+            }
+        } else if (type === 'step_started') {
+            const node = document.querySelector(`[data-step-id="${data.step_id}"]`);
+            if (node) {
+                node.className = 'timeline-node running';
+                const statusLbl = node.querySelector('p code');
+                if (statusLbl) statusLbl.textContent = 'running';
+            }
+            const executionBadge = document.getElementById('execution-badge');
+            executionBadge.textContent = "RUNNING";
+            executionBadge.classList.remove('hidden');
+        } else if (type === 'log_update') {
+            if (!selectedStepId || selectedStepId === data.step_id) {
+                const stepNode = document.querySelector(`[data-step-id="${data.step_id}"]`);
+                const stepNameText = stepNode ? stepNode.querySelector('h4').textContent : "Active Agent";
+                terminalStdout.textContent = `[AGENT LOGS: ${stepNameText.toUpperCase()}]\n\n${data.log}`;
+                const termBody = document.querySelector('.terminal-body');
+                termBody.scrollTop = termBody.scrollHeight;
+            }
+        } else if (type === 'eval_updated') {
+            const evals = data.evaluations || {};
+            evalBadge.textContent = evals.passed ? "PASSED" : "FAILED STYLE/FACT AUDIT";
+            evalBadge.style.backgroundColor = evals.passed ? 'var(--success)' : 'var(--danger)';
+            metricFact.textContent = evals.fact_accuracy_score ? `${evals.fact_accuracy_score}/10` : '-';
+            metricStyle.textContent = evals.style_compliance_score ? `${evals.style_compliance_score}/10` : '-';
+            metricEngagement.textContent = evals.predicted_engagement_score ? `${evals.predicted_engagement_score}%` : '-';
+
+            if (evals.errors && evals.errors.length > 0) {
+                auditErrorsContainer.classList.remove('hidden');
+                auditErrorsList.innerHTML = '';
+                evals.errors.forEach(err => {
+                    const li = document.createElement('li');
+                    li.textContent = err;
+                    auditErrorsList.appendChild(li);
+                });
+            } else {
+                auditErrorsContainer.classList.add('hidden');
+            }
+        } else if (type === 'step_completed') {
+            const response = await fetch(`/api/jobs/${activeJobId}`);
+            if (response.ok) {
+                const job = await response.json();
+                updateExecutionUI(job);
+            }
+        } else if (type === 'job_completed') {
+            const badge = document.getElementById('execution-badge');
+            badge.textContent = "COMPLETED";
+            badge.style.backgroundColor = 'var(--success)';
+            
+            const response = await fetch(`/api/jobs/${activeJobId}`);
+            if (response.ok) {
+                const job = await response.json();
+                updateExecutionUI(job);
+            }
+            
+            const saveStoryboardSpinner = document.getElementById('save-storyboard-spinner');
+            if (saveStoryboardSpinner) saveStoryboardSpinner.classList.add('hidden');
+        }
+    }
+
+    // Initialize WebSocket
+    connectWebSocket();
+
+    // Storyboard slide populator
+    function populateStoryboardEditor(steps) {
+        const slidesList = document.getElementById('slides-editor-list');
+        if (!slidesList) return;
+        
+        slidesList.innerHTML = '';
+        
+        const ffmpegStep = steps.find(s => s.worker === 'publishing_worker' || s.worker === 'voice_timing');
+        if (!ffmpegStep || !ffmpegStep.output) {
+            slidesList.innerHTML = '<div class="text-center py-2">No storyboard assets compiled yet.</div>';
+            return;
+        }
+        
+        try {
+            const parsedOut = JSON.parse(ffmpegStep.output);
+            const slides = parsedOut.timing_map || [];
+            
+            if (slides.length === 0) {
+                slidesList.innerHTML = '<div class="text-center py-2">No storyboard slides compiled.</div>';
+                return;
+            }
+            
+            slides.forEach(slide => {
+                const card = document.createElement('div');
+                card.className = 'slide-edit-card';
+                card.setAttribute('data-slide-number', slide.slide_number);
+                
+                const thumbUrl = slide.image_url || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800";
+                
+                card.innerHTML = `
+                    <div class="slide-edit-thumb">
+                        <img src="${thumbUrl}" alt="Slide ${slide.slide_number}">
+                    </div>
+                    <div class="slide-edit-fields">
+                        <div class="slide-edit-row">
+                            <div class="slide-edit-group" style="flex: 1.5;">
+                                <label>Narration Subtitle</label>
+                                <textarea class="slide-subtitle-input" rows="2">${slide.subtitle || ''}</textarea>
+                            </div>
+                            <div class="slide-edit-group" style="flex: 2;">
+                                <label>Image Generation Prompt</label>
+                                <textarea class="slide-prompt-input" rows="2">${slide.image_prompt || ''}</textarea>
+                            </div>
+                        </div>
+                        <div class="slide-edit-row" style="justify-content: space-between; align-items: center;">
+                            <span style="font-size: 10px; color: var(--text-secondary);">
+                                Time range: <code>${slide.start.toFixed(1)}s - ${slide.end.toFixed(1)}s</code>
+                            </span>
+                            <label class="slide-regen-toggle">
+                                <input type="checkbox" class="slide-regen-chk">
+                                <span>Regenerate Image</span>
+                            </label>
+                        </div>
+                    </div>
+                `;
+                slidesList.appendChild(card);
+            });
+        } catch (e) {
+            console.error("Error parsing storyboard slides for editor:", e);
+            slidesList.innerHTML = '<div class="text-center py-2 text-danger">Error loading storyboard slides.</div>';
+        }
+    }
+
+    // Save & Refine Storyboard button click handler
+    const btnSaveStoryboard = document.getElementById('btn-save-storyboard');
+    const saveStoryboardSpinner = document.getElementById('save-storyboard-spinner');
+    
+    if (btnSaveStoryboard) {
+        btnSaveStoryboard.addEventListener('click', async () => {
+            if (!activeJobId) return;
+            
+            const slideCards = document.querySelectorAll('.slide-edit-card');
+            const slidesData = [];
+            
+            slideCards.forEach(card => {
+                const slideNumber = parseInt(card.getAttribute('data-slide-number'));
+                const subtitle = card.querySelector('.slide-subtitle-input').value;
+                const imagePrompt = card.querySelector('.slide-prompt-input').value;
+                const regenerateImage = card.querySelector('.slide-regen-chk').checked;
+                
+                const origSlide = storyboardSlides.find(s => s.slide_number === slideNumber) || {};
+                
+                slidesData.push({
+                    slide_number: slideNumber,
+                    start: origSlide.start || 0,
+                    end: origSlide.end || 0,
+                    subtitle: subtitle,
+                    image_prompt: imagePrompt,
+                    image_url: origSlide.image_url || null,
+                    regenerate_image: regenerateImage
+                });
+            });
+            
+            try {
+                if (saveStoryboardSpinner) saveStoryboardSpinner.classList.remove('hidden');
+                btnSaveStoryboard.disabled = true;
+                
+                const response = await fetch(`/api/jobs/${activeJobId}/refine`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ slides: slidesData })
+                });
+                
+                if (!response.ok) throw new Error("Storyboard refine request failed.");
+                
+                const res = await response.json();
+                console.log("Refinement started:", res);
+                
+                switchTab('execution');
+                terminalStdout.textContent = "Initiating selective storyboard refinement. Re-running specialized worker agents...";
+                
+            } catch (error) {
+                console.error("Refine Storyboard Error:", error);
+                alert("Could not process storyboard refinement.");
+                if (saveStoryboardSpinner) saveStoryboardSpinner.classList.add('hidden');
+            } finally {
+                btnSaveStoryboard.disabled = false;
+            }
+        });
+    }
 });
