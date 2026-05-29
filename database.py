@@ -37,7 +37,8 @@ SessionLocal = async_sessionmaker(
     autocommit=False, 
     autoflush=False, 
     class_=AsyncSession, 
-    bind=engine
+    bind=engine,
+    expire_on_commit=False
 )
 
 # Declarative Base for ORM models
