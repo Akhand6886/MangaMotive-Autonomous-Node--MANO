@@ -54,7 +54,7 @@ class Settings(BaseSettings):
 
     # --- Storage & Queue Settings ---
     database_url: str = Field(
-        default="sqlite:///./data/agent_memory.db",
+        default="sqlite+aiosqlite:///./data/agent_memory.db",
         description="SQLite database URL for agent memory"
     )
     redis_url: str = Field(
