@@ -347,11 +347,16 @@ class PublishingWorkerAgent:
 
                 # Merge final reviews or articles based on type
                 if "blog" in target_platform.lower() or "article" in target_platform.lower():
+                    article_slug = seo_data.get("slug", clean_slug)
+                    art_result = await db.execute(select(Article).where(Article.slug == article_slug))
+                    existing_article = art_result.scalars().first()
+                    art_id = existing_article.id if existing_article else f"art_{job_id}"
+                    
                     article = Article(
-                        id=f"art_{job_id}",
+                        id=art_id,
                         series_id=series.id,
                         title=seo_data.get("seo_title", topic),
-                        slug=seo_data.get("slug", clean_slug),
+                        slug=article_slug,
                         excerpt=seo_data.get("meta_description", ""),
                         body_rich_text=contentful_service.to_rich_text(draft_text),
                         tags=seo_data.get("tags", []),
@@ -359,11 +364,16 @@ class PublishingWorkerAgent:
                     )
                     await db.merge(article)
                 else:
+                    review_slug = seo_data.get("slug", clean_slug)
+                    rev_result = await db.execute(select(Review).where(Review.slug == review_slug))
+                    existing_review = rev_result.scalars().first()
+                    rev_id = existing_review.id if existing_review else f"rev_{job_id}"
+                    
                     review = Review(
-                        id=f"rev_{job_id}",
+                        id=rev_id,
                         series_id=series.id,
                         title=seo_data.get("seo_title", topic),
-                        slug=seo_data.get("slug", clean_slug),
+                        slug=review_slug,
                         score=9,
                         positive_summary="Great narration flow and visual design.",
                         negative_summary="Short length restricts depth.",
