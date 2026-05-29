@@ -330,7 +330,11 @@ class OllamaService:
                 annotation = field_info.annotation
                 annotation_str = str(annotation)
                 
-                if annotation == str or "str" in annotation_str:
+                if "List" in annotation_str or "list" in annotation_str:
+                    mock_data[field_name] = [f"Sample {field_name} item 1", f"Sample {field_name} item 2"]
+                elif "Dict" in annotation_str or "dict" in annotation_str:
+                    mock_data[field_name] = {"sample_key": "sample_val"}
+                elif annotation == str or "str" in annotation_str:
                     if "slug" in field_name:
                         mock_data[field_name] = topic.lower().replace(" ", "-")
                     elif "title" in field_name:
@@ -345,10 +349,6 @@ class OllamaService:
                     mock_data[field_name] = 8.5
                 elif annotation == bool or "bool" in annotation_str:
                     mock_data[field_name] = True
-                elif "List" in annotation_str or "list" in annotation_str:
-                    mock_data[field_name] = [f"Sample {field_name} item 1", f"Sample {field_name} item 2"]
-                elif "Dict" in annotation_str or "dict" in annotation_str:
-                    mock_data[field_name] = {"sample_key": "sample_val"}
                 else:
                     mock_data[field_name] = None
 
