@@ -158,3 +158,16 @@ class ProjectMemory(Base):
     value = Column(JSON, default=list, comment="JSON array or object storing memory values")
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+class LLMCache(Base):
+    """
+    Cache for LLM prompt completions to avoid redundant requests and improve execution speed.
+    """
+    __tablename__ = "llm_cache"
+
+    prompt_hash = Column(String, primary_key=True, index=True, comment="SHA256 hash of the system prompt and user input")
+    prompt = Column(Text, nullable=False, comment="The prompt sent to the LLM")
+    response = Column(Text, nullable=False, comment="The cached text response from the LLM")
+    created_at = Column(DateTime, default=_utcnow)
+

@@ -1,52 +1,61 @@
 """
-Database Engine and Session Configuration.
+Database Engine and Session Configuration (Asynchronous).
 
-Manages SQLAlchemy engine creation, session factory, and FastAPI dependency
+Manages async SQLAlchemy engine creation, session factory, and FastAPI dependency
 injection for database sessions. Automatically creates the data directory
 for SQLite databases.
 """
 
 import os
-from typing import Generator
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from typing import AsyncGenerator
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import declarative_base
 from config import settings
 
 # Ensure data directory exists for SQLite database
-if settings.database_url.startswith("sqlite:///"):
-    db_path = settings.database_url.replace("sqlite:///", "")
+db_url = settings.database_url
+if db_url.startswith("sqlite+aiosqlite:///"):
+    db_path = db_url.replace("sqlite+aiosqlite:///", "")
+elif db_url.startswith("sqlite:///"):
+    db_path = db_url.replace("sqlite:///", "")
+else:
+    db_path = ""
+
+if db_path:
     db_dir = os.path.dirname(db_path)
     if db_dir and not os.path.exists(db_dir):
         os.makedirs(db_dir, exist_ok=True)
 
-# Create SQLAlchemy Engine with appropriate settings
-_connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-
-engine = create_engine(
+# Create Async SQLAlchemy Engine
+engine = create_async_engine(
     settings.database_url,
-    connect_args=_connect_args,
     echo=(settings.log_level == "DEBUG"),
-    pool_pre_ping=True,  # Validates connections before checkout (handles stale connections)
 )
 
-# Create SessionLocal class
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Create AsyncSessionLocal factory
+SessionLocal = async_sessionmaker(
+    autocommit=False, 
+    autoflush=False, 
+    class_=AsyncSession, 
+    bind=engine
+)
 
 # Declarative Base for ORM models
 Base = declarative_base()
 
 
-def get_db() -> Generator[Session, None, None]:
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
-    FastAPI dependency that yields a database session.
+    FastAPI dependency that yields an asynchronous database session.
     Ensures the session is closed after request completion.
 
     Yields:
-        SQLAlchemy Session instance.
+        SQLAlchemy AsyncSession instance.
     """
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    async with SessionLocal() as db:
+        try:
+            yield db
+        finally:
+            await db.close()
+
 
