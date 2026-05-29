@@ -1,7 +1,5 @@
 # MANO: Autonomous Multi-Agent Intelligence Harness
 
-![MANO Banner](https://images.unsplash.com/photo-1541963463532-d68292c34b19?q=80&w=1200&auto=format&fit=crop)
-
 > **A 7-layer dynamic intelligence harness designed to orchestrate raw AI models into a coordinated, self-correcting, and learning thinking machine. Persists cumulative preferences and features a live execution dashboard with storyboard synchronizations.**
 
 ---
