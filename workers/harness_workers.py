@@ -320,73 +320,73 @@ class PublishingWorkerAgent:
         """
         logger.info(f"[Publishing Worker] Completing publishing execution details for Job {job_id}...")
         
-        db = SessionLocal()
-        try:
-            # Check target platform, and sync to SQLite DB accordingly
-            target_platform = payload.get("target_platform", "")
-            topic = payload.get("topic", "")
-            seo_data = payload.get("seo_data", {})
-            draft_text = payload.get("draft_text", "")
-            image_url = payload.get("image_url", "")
-            audio_url = payload.get("audio_url", "")
+        async with SessionLocal() as db:
+            try:
+                # Check target platform, and sync to SQLite DB accordingly
+                target_platform = payload.get("target_platform", "")
+                topic = payload.get("topic", "")
+                seo_data = payload.get("seo_data", {})
+                draft_text = payload.get("draft_text", "")
+                image_url = payload.get("image_url", "")
+                audio_url = payload.get("audio_url", "")
 
-            # Create or update Series in DB
-            clean_slug = topic.lower().replace(" ", "-").replace(":", "")
-            series = db.query(Series).filter(Series.title == topic).first()
-            if not series:
-                series = Series(
-                    id=f"series_{clean_slug}",
-                    title=topic,
-                    slug=clean_slug,
-                    series_type="animeSeries"
-                )
-                db.add(series)
-                db.commit()
+                # Create or update Series in DB
+                clean_slug = topic.lower().replace(" ", "-").replace(":", "")
+                from sqlalchemy import select
+                result = await db.execute(select(Series).where(Series.title == topic))
+                series = result.scalars().first()
+                if not series:
+                    series = Series(
+                        id=f"series_{clean_slug}",
+                        title=topic,
+                        slug=clean_slug,
+                        series_type="animeSeries"
+                    )
+                    db.add(series)
+                    await db.commit()
 
-            # Merge final reviews or articles based on type
-            if "blog" in target_platform.lower() or "article" in target_platform.lower():
-                article = Article(
-                    id=f"art_{job_id}",
-                    series_id=series.id,
-                    title=seo_data.get("seo_title", topic),
-                    slug=seo_data.get("slug", clean_slug),
-                    excerpt=seo_data.get("meta_description", ""),
-                    body_rich_text=contentful_service.to_rich_text(draft_text),
-                    tags=seo_data.get("tags", []),
-                    cover_image_asset_id=image_url
-                )
-                db.merge(article)
-            else:
-                review = Review(
-                    id=f"rev_{job_id}",
-                    series_id=series.id,
-                    title=seo_data.get("seo_title", topic),
-                    slug=seo_data.get("slug", clean_slug),
-                    score=9,
-                    positive_summary="Great narration flow and visual design.",
-                    negative_summary="Short length restricts depth.",
-                    verdict="A highly engaging short video clip.",
-                    review_body_rich_text=contentful_service.to_rich_text(draft_text),
-                    media_asset_ids=[image_url, audio_url],
-                    seo_title=seo_data.get("seo_title", topic),
-                    seo_description=seo_data.get("meta_description", "")
-                )
-                db.merge(review)
+                # Merge final reviews or articles based on type
+                if "blog" in target_platform.lower() or "article" in target_platform.lower():
+                    article = Article(
+                        id=f"art_{job_id}",
+                        series_id=series.id,
+                        title=seo_data.get("seo_title", topic),
+                        slug=seo_data.get("slug", clean_slug),
+                        excerpt=seo_data.get("meta_description", ""),
+                        body_rich_text=contentful_service.to_rich_text(draft_text),
+                        tags=seo_data.get("tags", []),
+                        cover_image_asset_id=image_url
+                    )
+                    await db.merge(article)
+                else:
+                    review = Review(
+                        id=f"rev_{job_id}",
+                        series_id=series.id,
+                        title=seo_data.get("seo_title", topic),
+                        slug=seo_data.get("slug", clean_slug),
+                        score=9,
+                        positive_summary="Great narration flow and visual design.",
+                        negative_summary="Short length restricts depth.",
+                        verdict="A highly engaging short video clip.",
+                        review_body_rich_text=contentful_service.to_rich_text(draft_text),
+                        media_asset_ids=[image_url, audio_url],
+                        seo_title=seo_data.get("seo_title", topic),
+                        seo_description=seo_data.get("meta_description", "")
+                    )
+                    await db.merge(review)
 
-            db.commit()
-            logger.info(f"[Publishing Worker] SQLite state synchronized successfully for topic '{topic}'.")
-            return {
-                "published_entry_id": f"harness_{job_id}",
-                "status": "DryRun" if not image_url.startswith("http") else "Published",
-                "assets": {"thumbnail": image_url, "audio": audio_url},
-                "destination": "Local SQLite Database Memory"
-            }
-        except Exception as e:
-            logger.error(f"[Publishing Worker] Sync state error: {e}", exc_info=True)
-            db.rollback()
-            raise
-        finally:
-            db.close()
+                await db.commit()
+                logger.info(f"[Publishing Worker] SQLite state synchronized successfully for topic '{topic}'.")
+                return {
+                    "published_entry_id": f"harness_{job_id}",
+                    "status": "DryRun" if not image_url.startswith("http") else "Published",
+                    "assets": {"thumbnail": image_url, "audio": audio_url},
+                    "destination": "Local SQLite Database Memory"
+                }
+            except Exception as e:
+                logger.error(f"[Publishing Worker] Sync state error: {e}", exc_info=True)
+                await db.rollback()
+                raise
 
 # Instantiate global instances of workers
 research_worker = ResearchWorker()
