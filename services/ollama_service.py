@@ -9,9 +9,13 @@ import re
 import httpx
 import json
 import logging
+import hashlib
 from typing import Type, TypeVar, Optional, Any, Dict, List
 from pydantic import BaseModel, ValidationError
 from config import settings
+from database import SessionLocal
+from models import LLMCache
+from sqlalchemy import select
 
 logger = logging.getLogger("OllamaService")
 
@@ -47,6 +51,25 @@ class OllamaService:
     async def generate_text(self, prompt: str, model: Optional[str] = None, system: Optional[str] = None) -> str:
         """Generates raw text completion from Ollama, with robust fallback if offline."""
         target_model = model or self.default_model
+        
+        # 1. Compute prompt hash
+        prompt_content = f"system: {system or ''}\nprompt: {prompt}\nmodel: {target_model}"
+        prompt_hash = hashlib.sha256(prompt_content.encode("utf-8")).hexdigest()
+        
+        # 2. Check Cache
+        try:
+            async with SessionLocal() as db:
+                result = await db.execute(
+                    select(LLMCache).where(LLMCache.prompt_hash == prompt_hash)
+                )
+                cache_entry = result.scalars().first()
+                if cache_entry:
+                    logger.info(f"[LLMCache Hit] Text cache hit for hash: {prompt_hash}")
+                    return cache_entry.response
+        except Exception as e:
+            logger.warning(f"[LLMCache Error] Failed to read from cache: {e}")
+
+        # 3. Cache Miss - Generate
         url = f"{self.base_url}/api/generate"
         payload: Dict[str, Any] = {
             "model": target_model,
@@ -57,15 +80,33 @@ class OllamaService:
             payload["system"] = system
 
         logger.info(f"[Ollama] Generating text completion with model: {target_model}")
+        response_text = ""
         try:
             client = await self._get_client()
             response = await client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()
-            return data.get("response", "")
+            response_text = data.get("response", "")
         except Exception as e:
             logger.warning(f"[Ollama Offline] Could not generate text via Ollama: {e}. Utilizing fallback mock response.")
-            return self._generate_text_fallback(prompt)
+            response_text = self._generate_text_fallback(prompt)
+
+        # 4. Save to Cache
+        if response_text:
+            try:
+                async with SessionLocal() as db:
+                    cache_entry = LLMCache(
+                        prompt_hash=prompt_hash,
+                        prompt=prompt_content,
+                        response=response_text
+                    )
+                    db.add(cache_entry)
+                    await db.commit()
+                    logger.info(f"[LLMCache Save] Saved text response for hash: {prompt_hash}")
+            except Exception as e:
+                logger.warning(f"[LLMCache Save Failed] Could not save response to cache: {e}")
+
+        return response_text
 
     async def generate_structured(self, prompt: str, schema_class: Type[T], model: Optional[str] = None, max_retries: int = 3) -> T:
         """
@@ -85,6 +126,28 @@ class OllamaService:
             f"Do not include any markdown formatting, backticks, or conversational text outside the JSON object."
         )
 
+        # 1. Compute prompt hash
+        prompt_content = f"structured: {schema_class.__name__}\nprompt: {full_prompt}\nmodel: {target_model}"
+        prompt_hash = hashlib.sha256(prompt_content.encode("utf-8")).hexdigest()
+
+        # 2. Check Cache
+        try:
+            async with SessionLocal() as db:
+                result = await db.execute(
+                    select(LLMCache).where(LLMCache.prompt_hash == prompt_hash)
+                )
+                cache_entry = result.scalars().first()
+                if cache_entry:
+                    logger.info(f"[LLMCache Hit] Structured cache hit for hash: {prompt_hash}")
+                    try:
+                        parsed_obj = schema_class.model_validate_json(cache_entry.response)
+                        logger.info("[LLMCache Hit] Structured validation PASSED.")
+                        return parsed_obj
+                    except ValidationError as ve:
+                        logger.warning(f"[LLMCache Hit] Cached response failed validation: {ve}. Re-generating.")
+        except Exception as e:
+            logger.warning(f"[LLMCache Error] Failed to read from cache: {e}")
+
         payload = {
             "model": target_model,
             "prompt": full_prompt,
@@ -92,6 +155,7 @@ class OllamaService:
             "stream": False
         }
 
+        parsed_obj = None
         try:
             client = await self._get_client()
             attempt = 0
@@ -110,7 +174,7 @@ class OllamaService:
                     # Attempt Pydantic validation
                     parsed_obj = schema_class.model_validate_json(raw_json)
                     logger.info("[Ollama] Structured validation PASSED.")
-                    return parsed_obj
+                    break
 
                 except ValidationError as ve:
                     logger.warning(f"[Ollama] Pydantic validation failed on attempt {attempt}: {ve}")
@@ -132,12 +196,31 @@ class OllamaService:
                     logger.warning(f"[Ollama] API/Decode error on attempt {attempt}: {e}")
                     last_error = str(e)
 
-            logger.error(f"[Ollama] Failed to generate valid structured output after {max_retries} attempts. Triggering schema-compliant mock fallback.")
-            return self._generate_fallback_mock(prompt, schema_class)
+            if parsed_obj is None:
+                logger.error(f"[Ollama] Failed to generate valid structured output after {max_retries} attempts. Triggering schema-compliant mock fallback.")
+                parsed_obj = self._generate_fallback_mock(prompt, schema_class)
 
         except Exception as e:
             logger.warning(f"[Ollama Offline] Ollama server is unreachable: {e}. Generating schema-compliant mock fallback.")
-            return self._generate_fallback_mock(prompt, schema_class)
+            parsed_obj = self._generate_fallback_mock(prompt, schema_class)
+
+        # Save to Cache
+        if parsed_obj is not None:
+            try:
+                response_json = parsed_obj.model_dump_json()
+                async with SessionLocal() as db:
+                    cache_entry = LLMCache(
+                        prompt_hash=prompt_hash,
+                        prompt=prompt_content,
+                        response=response_json
+                    )
+                    db.add(cache_entry)
+                    await db.commit()
+                    logger.info(f"[LLMCache Save] Saved structured response for hash: {prompt_hash}")
+            except Exception as e:
+                logger.warning(f"[LLMCache Save Failed] Could not save response to cache: {e}")
+
+        return parsed_obj
 
     def _generate_text_fallback(self, prompt: str) -> str:
         """Generates smart mock text content based on keywords in the prompt."""
