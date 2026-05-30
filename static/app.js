@@ -428,7 +428,35 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // 7. Memory Store management panel load
+    // 7. Memory Store management panel load & LLM Configuration
+    const selectLlmProvider = document.getElementById('setting-llm-provider');
+    const inputOpenaiModel = document.getElementById('setting-openai-model');
+    const inputGeminiModel = document.getElementById('setting-gemini-model');
+    const inputOpenaiKey = document.getElementById('setting-openai-key');
+    const inputGeminiKey = document.getElementById('setting-gemini-key');
+
+    if (selectLlmProvider) {
+        selectLlmProvider.addEventListener('change', () => {
+            toggleProviderFields(selectLlmProvider.value);
+        });
+    }
+
+    function toggleProviderFields(provider) {
+        const openaiFields = document.querySelectorAll('.config-field-openai');
+        const geminiFields = document.querySelectorAll('.config-field-gemini');
+        
+        if (provider === 'openai') {
+            openaiFields.forEach(f => f.classList.remove('hidden'));
+            geminiFields.forEach(f => f.classList.add('hidden'));
+        } else if (provider === 'gemini') {
+            openaiFields.forEach(f => f.classList.add('hidden'));
+            geminiFields.forEach(f => f.classList.remove('hidden'));
+        } else {
+            openaiFields.forEach(f => f.classList.add('hidden'));
+            geminiFields.forEach(f => f.classList.add('hidden'));
+        }
+    }
+
     async function loadMemorySettings() {
         try {
             const response = await fetch('/api/harness/memory');
@@ -436,6 +464,24 @@ document.addEventListener('DOMContentLoaded', () => {
             
             memoryCardsContainer.innerHTML = '';
             memories.forEach(mem => {
+                const configKeys = ['llm_provider', 'openai_api_key', 'openai_model', 'gemini_api_key', 'gemini_model'];
+                if (configKeys.includes(mem.key)) {
+                    const val = mem.value && mem.value.length > 0 ? mem.value[0] : '';
+                    if (mem.key === 'llm_provider' && selectLlmProvider) {
+                        selectLlmProvider.value = val;
+                        toggleProviderFields(val);
+                    } else if (mem.key === 'openai_model' && inputOpenaiModel) {
+                        inputOpenaiModel.value = val;
+                    } else if (mem.key === 'gemini_model' && inputGeminiModel) {
+                        inputGeminiModel.value = val;
+                    } else if (mem.key === 'openai_api_key' && inputOpenaiKey) {
+                        inputOpenaiKey.value = val;
+                    } else if (mem.key === 'gemini_api_key' && inputGeminiKey) {
+                        inputGeminiKey.value = val;
+                    }
+                    return;
+                }
+
                 const box = document.createElement('div');
                 box.className = 'memory-box';
                 box.innerHTML = `
@@ -466,7 +512,26 @@ document.addEventListener('DOMContentLoaded', () => {
                     body: JSON.stringify({ key: key, value: val })
                 });
             }
-            alert("Memory configuration updated in database.");
+
+            if (selectLlmProvider) {
+                const configSettings = [
+                    { key: 'llm_provider', value: [selectLlmProvider.value] },
+                    { key: 'openai_model', value: [inputOpenaiModel.value || 'gpt-4o-mini'] },
+                    { key: 'gemini_model', value: [inputGeminiModel.value || 'gemini-2.5-flash'] },
+                    { key: 'openai_api_key', value: [inputOpenaiKey.value || ''] },
+                    { key: 'gemini_api_key', value: [inputGeminiKey.value || ''] }
+                ];
+
+                for (let setting of configSettings) {
+                    await fetch('/api/harness/memory', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(setting)
+                    });
+                }
+            }
+
+            alert("System settings and guidelines updated in database.");
         } catch (error) {
             console.error("Save Memory Error:", error);
             alert("Failed to save memory guidelines.");

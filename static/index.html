@@ -280,6 +280,42 @@
                         <p>Customize the cumulative preferences that guide writing tone, styling rules, and filters. Changes persist in SQLite database.</p>
                     </div>
                     <div class="card-body">
+                        <!-- LLM Model Settings Panel -->
+                        <div class="llm-settings-panel" style="background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-color); padding: 20px; border-radius: 12px; margin-bottom: 25px;">
+                            <h4 style="margin-top: 0; margin-bottom: 10px; font-family: 'Outfit', sans-serif; color: var(--text-primary); font-size: 16px;">System LLM Model Provider Configuration</h4>
+                            <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 20px;">Toggle between running local offline models (Ollama) or connecting to online APIs (OpenAI or Gemini).</p>
+                            
+                            <div class="form-row" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 15px;">
+                                <div class="form-group">
+                                    <label style="display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; color: var(--text-secondary);">Active LLM Provider</label>
+                                    <select id="setting-llm-provider" style="width: 100%; padding: 10px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); outline: none;">
+                                        <option value="ollama">Ollama (Offline/Local)</option>
+                                        <option value="openai">OpenAI (Online API)</option>
+                                        <option value="gemini">Google Gemini (Online API)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group config-field-openai hidden">
+                                    <label style="display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; color: var(--text-secondary);">OpenAI Model Name</label>
+                                    <input type="text" id="setting-openai-model" placeholder="gpt-4o-mini" style="width: 100%; padding: 10px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); outline: none;">
+                                </div>
+                                <div class="form-group config-field-gemini hidden">
+                                    <label style="display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; color: var(--text-secondary);">Gemini Model Name</label>
+                                    <input type="text" id="setting-gemini-model" placeholder="gemini-2.5-flash" style="width: 100%; padding: 10px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); outline: none;">
+                                </div>
+                            </div>
+                            
+                            <div class="form-row" style="display: grid; grid-template-columns: 1fr; gap: 15px;">
+                                <div class="form-group config-field-openai hidden">
+                                    <label style="display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; color: var(--text-secondary);">OpenAI API Key</label>
+                                    <input type="password" id="setting-openai-key" placeholder="sk-..." style="width: 100%; padding: 10px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); outline: none;">
+                                </div>
+                                <div class="form-group config-field-gemini hidden">
+                                    <label style="display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; color: var(--text-secondary);">Gemini API Key</label>
+                                    <input type="password" id="setting-gemini-key" placeholder="AIzaSy..." style="width: 100%; padding: 10px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); outline: none;">
+                                </div>
+                            </div>
+                        </div>
+                        
                         <div class="memory-grid" id="memory-cards-container">
                             <!-- Populated dynamically with Memory items -->
                         </div>
