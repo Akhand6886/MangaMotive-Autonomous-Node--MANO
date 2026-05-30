@@ -14,7 +14,7 @@ from typing import Type, TypeVar, Optional, Any, Dict, List
 from pydantic import BaseModel, ValidationError
 from config import settings
 from database import SessionLocal
-from models import LLMCache
+from models import LLMCache, ProjectMemory
 from sqlalchemy import select
 
 logger = logging.getLogger("OllamaService")
@@ -48,12 +48,36 @@ class OllamaService:
             await self._client.aclose()
             self._client = None
 
+    async def _get_runtime_settings(self) -> Dict[str, Any]:
+        """Loads runtime overrides from SQLite ProjectMemory database, falling back to config settings."""
+        runtime = {
+            "llm_provider": settings.llm_provider,
+            "openai_api_key": settings.openai_api_key,
+            "openai_model": settings.openai_model,
+            "gemini_api_key": settings.gemini_api_key,
+            "gemini_model": settings.gemini_model,
+        }
+        try:
+            async with SessionLocal() as db:
+                for key in runtime.keys():
+                    result = await db.execute(
+                        select(ProjectMemory).where(ProjectMemory.key == key)
+                    )
+                    mem = result.scalars().first()
+                    if mem and mem.value and len(mem.value) > 0:
+                        runtime[key] = mem.value[0]
+        except Exception as e:
+            logger.warning(f"Failed to load runtime settings from DB: {e}")
+        return runtime
+
     async def generate_text(self, prompt: str, model: Optional[str] = None, system: Optional[str] = None) -> str:
-        """Generates raw text completion from Ollama, with robust fallback if offline."""
-        target_model = model or self.default_model
+        """Generates raw text completion from Ollama, OpenAI, or Gemini, with robust fallback if offline."""
+        runtime = await self._get_runtime_settings()
+        provider = runtime["llm_provider"]
+        target_model = model or (runtime["openai_model"] if provider == "openai" else runtime["gemini_model"] if provider == "gemini" else self.default_model)
         
         # 1. Compute prompt hash
-        prompt_content = f"system: {system or ''}\nprompt: {prompt}\nmodel: {target_model}"
+        prompt_content = f"provider: {provider}\nsystem: {system or ''}\nprompt: {prompt}\nmodel: {target_model}"
         prompt_hash = hashlib.sha256(prompt_content.encode("utf-8")).hexdigest()
         
         # 2. Check Cache
@@ -70,25 +94,67 @@ class OllamaService:
             logger.warning(f"[LLMCache Error] Failed to read from cache: {e}")
 
         # 3. Cache Miss - Generate
-        url = f"{self.base_url}/api/generate"
-        payload: Dict[str, Any] = {
-            "model": target_model,
-            "prompt": prompt,
-            "stream": False
-        }
-        if system:
-            payload["system"] = system
-
-        logger.info(f"[Ollama] Generating text completion with model: {target_model}")
         response_text = ""
         try:
             client = await self._get_client()
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            data = response.json()
-            response_text = data.get("response", "")
+            if provider == "openai":
+                api_key = runtime["openai_api_key"]
+                if not api_key:
+                    raise ValueError("OpenAI API key is missing")
+                url = "https://api.openai.com/v1/chat/completions"
+                messages = []
+                if system:
+                    messages.append({"role": "system", "content": system})
+                messages.append({"role": "user", "content": prompt})
+                payload = {
+                    "model": target_model,
+                    "messages": messages,
+                    "temperature": 0.7
+                }
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
+                logger.info(f"[OpenAI] Generating text completion with model: {target_model}")
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                response_text = data["choices"][0]["message"]["content"]
+
+            elif provider == "gemini":
+                api_key = runtime["gemini_api_key"]
+                if not api_key:
+                    raise ValueError("Gemini API key is missing")
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={api_key}"
+                parts = [{"text": prompt}]
+                if system:
+                    parts.insert(0, {"text": f"System Instruction: {system}\n\n"})
+                payload = {
+                    "contents": [{"parts": parts}]
+                }
+                logger.info(f"[Gemini] Generating text completion with model: {target_model}")
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                data = response.json()
+                response_text = data["candidates"][0]["content"]["parts"][0]["text"]
+
+            else:  # ollama
+                url = f"{self.base_url}/api/generate"
+                payload = {
+                    "model": target_model,
+                    "prompt": prompt,
+                    "stream": False
+                }
+                if system:
+                    payload["system"] = system
+                logger.info(f"[Ollama] Generating text completion with model: {target_model}")
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                data = response.json()
+                response_text = data.get("response", "")
+
         except Exception as e:
-            logger.warning(f"[Ollama Offline] Could not generate text via Ollama: {e}. Utilizing fallback mock response.")
+            logger.warning(f"[{provider.upper()} Generation Error] {e}. Utilizing fallback mock response.")
             response_text = self._generate_text_fallback(prompt)
 
         # 4. Save to Cache
@@ -112,12 +178,12 @@ class OllamaService:
         """
         Generates structured JSON matching a Pydantic schema class.
         Implements an automatic Reflection & Self-Correction loop.
-        Falls back to a schema-compliant mock generator if Ollama is offline or fails repeatedly.
+        Falls back to a schema-compliant mock generator if provider is offline or fails repeatedly.
         """
-        target_model = model or self.default_model
-        url = f"{self.base_url}/api/generate"
+        runtime = await self._get_runtime_settings()
+        provider = runtime["llm_provider"]
+        target_model = model or (runtime["openai_model"] if provider == "openai" else runtime["gemini_model"] if provider == "gemini" else self.default_model)
         
-        # Inject JSON schema instructions into prompt
         schema_json = schema_class.model_json_schema()
         full_prompt = (
             f"{prompt}\n\n"
@@ -127,7 +193,7 @@ class OllamaService:
         )
 
         # 1. Compute prompt hash
-        prompt_content = f"structured: {schema_class.__name__}\nprompt: {full_prompt}\nmodel: {target_model}"
+        prompt_content = f"provider: {provider}\nstructured: {schema_class.__name__}\nprompt: {full_prompt}\nmodel: {target_model}"
         prompt_hash = hashlib.sha256(prompt_content.encode("utf-8")).hexdigest()
 
         # 2. Check Cache
@@ -148,13 +214,6 @@ class OllamaService:
         except Exception as e:
             logger.warning(f"[LLMCache Error] Failed to read from cache: {e}")
 
-        payload = {
-            "model": target_model,
-            "prompt": full_prompt,
-            "format": "json",
-            "stream": False
-        }
-
         parsed_obj = None
         try:
             client = await self._get_client()
@@ -163,21 +222,70 @@ class OllamaService:
 
             while attempt < max_retries:
                 attempt += 1
-                logger.info(f"[Ollama] Structured generation attempt {attempt}/{max_retries} with model: {target_model}")
+                logger.info(f"[{provider.upper()}] Structured generation attempt {attempt}/{max_retries} with model: {target_model}")
                 
                 try:
-                    response = await client.post(url, json=payload)
-                    response.raise_for_status()
-                    data = response.json()
-                    raw_json = data.get("response", "").strip()
+                    raw_json = ""
+                    if provider == "openai":
+                        api_key = runtime["openai_api_key"]
+                        if not api_key:
+                            raise ValueError("OpenAI API key is missing")
+                        url = "https://api.openai.com/v1/chat/completions"
+                        payload = {
+                            "model": target_model,
+                            "messages": [{"role": "user", "content": full_prompt}],
+                            "temperature": 0.7,
+                            "response_format": {"type": "json_object"}
+                        }
+                        headers = {
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json"
+                        }
+                        response = await client.post(url, json=payload, headers=headers)
+                        response.raise_for_status()
+                        data = response.json()
+                        raw_json = data["choices"][0]["message"]["content"].strip()
+
+                    elif provider == "gemini":
+                        api_key = runtime["gemini_api_key"]
+                        if not api_key:
+                            raise ValueError("Gemini API key is missing")
+                        url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={api_key}"
+                        payload = {
+                            "contents": [{"parts": [{"text": full_prompt}]}],
+                            "generationConfig": {
+                                "responseMimeType": "application/json"
+                            }
+                        }
+                        response = await client.post(url, json=payload)
+                        response.raise_for_status()
+                        data = response.json()
+                        raw_json = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+                    else:  # ollama
+                        url = f"{self.base_url}/api/generate"
+                        payload = {
+                            "model": target_model,
+                            "prompt": full_prompt,
+                            "format": "json",
+                            "stream": False
+                        }
+                        response = await client.post(url, json=payload)
+                        response.raise_for_status()
+                        data = response.json()
+                        raw_json = data.get("response", "").strip()
+
+                    # Clean markdown wrappers if any API output contains them
+                    if raw_json.startswith("```"):
+                        raw_json = re.sub(r"^```(?:json)?\n|```$", "", raw_json, flags=re.MULTILINE).strip()
 
                     # Attempt Pydantic validation
                     parsed_obj = schema_class.model_validate_json(raw_json)
-                    logger.info("[Ollama] Structured validation PASSED.")
+                    logger.info(f"[{provider.upper()}] Structured validation PASSED.")
                     break
 
                 except ValidationError as ve:
-                    logger.warning(f"[Ollama] Pydantic validation failed on attempt {attempt}: {ve}")
+                    logger.warning(f"[{provider.upper()}] Pydantic validation failed on attempt {attempt}: {ve}")
                     last_error = str(ve)
                     
                     # Reflection & Self-Correction Loop
@@ -187,21 +295,25 @@ class OllamaService:
                         f"Here was your invalid JSON output:\n{raw_json}\n\n"
                         f"Please correct the JSON structure to fully comply with the schema and return ONLY the corrected JSON object."
                     )
-                    payload["prompt"] = correction_prompt
+                    # For Ollama we update payload prompt, for OpenAI/Gemini we modify full_prompt
+                    if provider == "ollama":
+                        payload["prompt"] = correction_prompt
+                    else:
+                        full_prompt = correction_prompt
 
                 except (httpx.ConnectError, httpx.ConnectTimeout) as ce:
-                    logger.warning(f"[Ollama Connection Error] Cannot connect to Ollama server: {ce}. Skipping retries and activating fallback.")
+                    logger.warning(f"[{provider.upper()} Connection Error] Connect failure: {ce}. Skipping retries.")
                     break
                 except (httpx.HTTPError, json.JSONDecodeError) as e:
-                    logger.warning(f"[Ollama] API/Decode error on attempt {attempt}: {e}")
+                    logger.warning(f"[{provider.upper()}] API/Decode error on attempt {attempt}: {e}")
                     last_error = str(e)
 
             if parsed_obj is None:
-                logger.error(f"[Ollama] Failed to generate valid structured output after {max_retries} attempts. Triggering schema-compliant mock fallback.")
+                logger.error(f"[{provider.upper()}] Failed to generate valid structured output after {max_retries} attempts. Triggering schema-compliant mock fallback.")
                 parsed_obj = self._generate_fallback_mock(prompt, schema_class)
 
         except Exception as e:
-            logger.warning(f"[Ollama Offline] Ollama server is unreachable: {e}. Generating schema-compliant mock fallback.")
+            logger.warning(f"[{provider.upper()} Offline] Ollama/API server is unreachable: {e}. Generating schema-compliant mock fallback.")
             parsed_obj = self._generate_fallback_mock(prompt, schema_class)
 
         # Save to Cache

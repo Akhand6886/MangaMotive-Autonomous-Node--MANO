@@ -77,7 +77,12 @@ async def preseed_memory_defaults():
                         "Keep paragraphs under 3 sentences for high readability",
                         "Analyze character motivations and thematic significance",
                         "Always highlight standout lines or voice acting performance"
-                    ]
+                    ],
+                    "llm_provider": ["ollama"],
+                    "openai_api_key": [""],
+                    "openai_model": ["gpt-4o-mini"],
+                    "gemini_api_key": [""],
+                    "gemini_model": ["gemini-2.5-flash"]
                 }
                 for key, val in defaults.items():
                     db.add(ProjectMemory(key=key, value=val))

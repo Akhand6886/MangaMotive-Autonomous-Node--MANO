@@ -32,6 +32,28 @@ class Settings(BaseSettings):
         description="Timeout for LLM generation requests (10-600s)"
     )
 
+    # --- Multi-Provider LLM Settings ---
+    llm_provider: str = Field(
+        default="ollama",
+        description="Active LLM provider (ollama, openai, gemini)"
+    )
+    openai_api_key: str = Field(
+        default="",
+        description="OpenAI API Key"
+    )
+    openai_model: str = Field(
+        default="gpt-4o-mini",
+        description="OpenAI Model name"
+    )
+    gemini_api_key: str = Field(
+        default="",
+        description="Gemini API Key"
+    )
+    gemini_model: str = Field(
+        default="gemini-2.5-flash",
+        description="Gemini Model name"
+    )
+
     # --- Contentful Management API Settings ---
     contentful_management_token: str = Field(
         default="cfp_placeholder_token",
